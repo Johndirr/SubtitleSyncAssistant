@@ -1,14 +1,25 @@
 import sys
 from PyQt5.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QSizePolicy
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QSizePolicy, QFrame, QLabel
 )
 from PyQt5.QtCore import Qt
+
+class PlotWidget(QFrame):
+    def __init__(self, title="Plot"):
+        super().__init__()
+        self.setFrameStyle(QFrame.Box | QFrame.Plain)
+        self.setLineWidth(1)
+        self.setMinimumHeight(120)
+        label = QLabel(title, self)
+        label.setAlignment(Qt.AlignCenter)
+        layout = QVBoxLayout(self)
+        layout.addWidget(label)
 
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Button-LineEdit Pairs Example")
-        self.resize(1024, 250)  # Set default window size to 1024x250
+        self.resize(1024, 400)  # Increased height for plots
         self.init_ui()
 
     def init_ui(self):
@@ -63,6 +74,21 @@ class MainWindow(QWidget):
         row4.addWidget(btn4)
         row4.addWidget(le4)
         main_layout.addLayout(row4)
+
+        # Add a horizontal line as a separator as well as some spacing
+        main_layout.addSpacing(10)
+        separator = QFrame()
+        separator.setFrameShape(QFrame.HLine)
+        separator.setFrameShadow(QFrame.Sunken)
+        separator.setLineWidth(1)
+        main_layout.addWidget(separator)
+        main_layout.addSpacing(10)
+
+        # Two PlotWidgets below the pairs, stacked vertically
+        plot1 = PlotWidget("Plot 1")
+        plot2 = PlotWidget("Plot 2")
+        main_layout.addWidget(plot1)
+        main_layout.addWidget(plot2)
 
         main_layout.addStretch(1)
 
