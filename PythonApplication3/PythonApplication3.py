@@ -1,6 +1,6 @@
 import sys
 from PyQt5.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QSizePolicy, QFrame, QLabel
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QSizePolicy, QFrame, QLabel, QTableWidget, QHeaderView
 )
 from PyQt5.QtCore import Qt
 
@@ -19,7 +19,7 @@ class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Button-LineEdit Pairs Example")
-        self.resize(1024, 400)  # Increased height for plots
+        self.resize(1024, 600)  # Increased height for tables
         self.init_ui()
 
     def init_ui(self):
@@ -90,7 +90,61 @@ class MainWindow(QWidget):
         main_layout.addWidget(plot1)
         main_layout.addWidget(plot2)
 
-        main_layout.addStretch(1)
+        # Add some spacing before the tables
+        main_layout.addSpacing(10)
+
+        # Add two tables side by side below the plots, and make them expand to fill the remaining space
+        tables_row = QHBoxLayout()
+
+        # Left table: referencetable
+        self.referencetable = QTableWidget(0, 3)
+        self.referencetable.setHorizontalHeaderLabels(["Start time", "End time", "Text"])
+        self.referencetable.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.referencetable.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.referencetable.setColumnWidth(0, 100)
+        self.referencetable.setColumnWidth(1, 100)
+        self.referencetable.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)    # "Start time"
+        self.referencetable.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed)    # "End time"
+        self.referencetable.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)  # "Text"
+
+        # Right table: synctable
+        self.synctable = QTableWidget(0, 4)
+        self.synctable.setHorizontalHeaderLabels(["Start time", "End time", "Text", "Found offset"])
+        self.synctable.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.synctable.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.synctable.setColumnWidth(0, 100)
+        self.synctable.setColumnWidth(1, 100)
+        self.synctable.setColumnWidth(3, 100)
+        self.synctable.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)    # "Start time"
+        self.synctable.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed)    # "End time"
+        self.synctable.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)  # "Text"
+        self.synctable.horizontalHeader().setSectionResizeMode(3, QHeaderView.Fixed)  # "Found offset"
+
+        tables_row.addWidget(self.referencetable)
+        tables_row.addWidget(self.synctable)
+
+        # Use a container widget for the tables and set its size policy to expanding
+        tables_container = QWidget()
+        tables_container.setLayout(tables_row)
+        tables_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        main_layout.addWidget(tables_container)
+
+        # Align all columns' text to the left for both tables
+        self.align_table_columns_left(self.referencetable)
+        self.align_table_columns_left(self.synctable)
+
+    def align_table_columns_left(self, table):
+        header = table.horizontalHeader()
+        for col in range(table.columnCount()):
+            # Set alignment for header
+            item = table.horizontalHeaderItem(col)
+            if item is not None:
+                item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            # Set alignment for all existing cells in this column
+            for row in range(table.rowCount()):
+                cell = table.item(row, col)
+                if cell is not None:
+                    cell.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
