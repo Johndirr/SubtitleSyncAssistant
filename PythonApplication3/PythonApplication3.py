@@ -118,10 +118,11 @@ class MainWindow(QWidget):
         self.synctable.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)    # "Start time"
         self.synctable.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed)    # "End time"
         self.synctable.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)  # "Text"
-        self.synctable.horizontalHeader().setSectionResizeMode(3, QHeaderView.Fixed)  # "Found offset"
+        self.synctable.horizontalHeader().setSectionResizeMode(3, QHeaderView.Fixed)    # "Found offset"
 
         tables_row.addWidget(self.referencetable)
         tables_row.addWidget(self.synctable)
+        tables_row.setContentsMargins(0, 0, 0, 0) # Remove margins between tables so that they have the same width as the plots
 
         # Use a container widget for the tables and set its size policy to expanding
         tables_container = QWidget()
