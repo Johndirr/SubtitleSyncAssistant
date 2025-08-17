@@ -91,6 +91,14 @@ class MainWindow(QWidget):
         # Connect btn4 to file save dialog
         self.btn4.clicked.connect(self.save_subtitle_file_btn4)
 
+        # Analyze button
+        row5 = QHBoxLayout()
+        self.btn5 = QPushButton("Analyze...")
+        #self.btn5.setFixedWidth(220)
+        self.btn5.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        row5.addWidget(self.btn5)
+        main_layout.addLayout(row5)
+
         # Add a horizontal line as a separator as well as some spacing
         main_layout.addSpacing(10)
         separator = QFrame()
