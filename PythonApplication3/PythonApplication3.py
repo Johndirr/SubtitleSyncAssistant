@@ -1,6 +1,6 @@
 import sys
 from PyQt5.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QSizePolicy, QFrame, QLabel, QTableWidget, QHeaderView
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QSizePolicy, QFrame, QLabel, QTableWidget, QHeaderView, QFileDialog
 )
 from PyQt5.QtCore import Qt
 
@@ -29,51 +29,67 @@ class MainWindow(QWidget):
 
         # Pair 1: Load reference media file
         row1 = QHBoxLayout()
-        btn1 = QPushButton("Load reference media file")
-        btn1.setFixedWidth(220)
-        btn1.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        le1 = QLineEdit()
-        le1.setPlaceholderText("No file selected")
-        le1.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        row1.addWidget(btn1)
-        row1.addWidget(le1)
+        self.btn1 = QPushButton("Load reference media file")
+        self.btn1.setFixedWidth(220)
+        self.btn1.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.le1 = QLineEdit()
+        self.le1.setPlaceholderText("No file selected")
+        self.le1.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.le1.setReadOnly(True)  # Make not editable
+        row1.addWidget(self.btn1)
+        row1.addWidget(self.le1)
         main_layout.addLayout(row1)
+
+        # Connect btn1 to file dialog
+        self.btn1.clicked.connect(self.select_media_file_btn1)
 
         # Pair 2: Load new media file
         row2 = QHBoxLayout()
-        btn2 = QPushButton("Load new media file")
-        btn2.setFixedWidth(220)
-        btn2.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        le2 = QLineEdit()
-        le2.setPlaceholderText("No file selected")
-        le2.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        row2.addWidget(btn2)
-        row2.addWidget(le2)
+        self.btn2 = QPushButton("Load new media file")
+        self.btn2.setFixedWidth(220)
+        self.btn2.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.le2 = QLineEdit()
+        self.le2.setPlaceholderText("No file selected")
+        self.le2.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.le2.setReadOnly(True)  # Make not editable
+        row2.addWidget(self.btn2)
+        row2.addWidget(self.le2)
         main_layout.addLayout(row2)
+
+        # Connect btn2 to file dialog
+        self.btn2.clicked.connect(self.select_media_file_btn2)
 
         # Pair 3: Load reference subtitle
         row3 = QHBoxLayout()
-        btn3 = QPushButton("Load reference subtitle")
-        btn3.setFixedWidth(220)
-        btn3.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        le3 = QLineEdit()
-        le3.setPlaceholderText("No file selected")
-        le3.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        row3.addWidget(btn3)
-        row3.addWidget(le3)
+        self.btn3 = QPushButton("Load reference subtitle")
+        self.btn3.setFixedWidth(220)
+        self.btn3.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.le3 = QLineEdit()
+        self.le3.setPlaceholderText("No file selected")
+        self.le3.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.le3.setReadOnly(True)  # Make not editable
+        row3.addWidget(self.btn3)
+        row3.addWidget(self.le3)
         main_layout.addLayout(row3)
+
+        # Connect btn3 to file dialog for .srt files
+        self.btn3.clicked.connect(self.select_subtitle_file_btn3)
 
         # Pair 4: Save subtitle under...
         row4 = QHBoxLayout()
-        btn4 = QPushButton("Save subtitle under...")
-        btn4.setFixedWidth(220)
-        btn4.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        le4 = QLineEdit()
-        le4.setPlaceholderText("No file selected")
-        le4.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        row4.addWidget(btn4)
-        row4.addWidget(le4)
+        self.btn4 = QPushButton("Save subtitle under...")
+        self.btn4.setFixedWidth(220)
+        self.btn4.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.le4 = QLineEdit()
+        self.le4.setPlaceholderText("No file selected")
+        self.le4.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.le4.setReadOnly(True)  # Make not editable
+        row4.addWidget(self.btn4)
+        row4.addWidget(self.le4)
         main_layout.addLayout(row4)
+
+        # Connect btn4 to file save dialog
+        self.btn4.clicked.connect(self.save_subtitle_file_btn4)
 
         # Add a horizontal line as a separator as well as some spacing
         main_layout.addSpacing(10)
@@ -133,6 +149,30 @@ class MainWindow(QWidget):
         # Align all columns' text to the left for both tables
         self.align_table_columns_left(self.referencetable)
         self.align_table_columns_left(self.synctable)
+
+    def select_media_file_btn1(self):
+        filters = "Media files (*.avi *.mkv *.mpg *.mpeg *.mp4 *.mov *.wmv *.flv *.webm);;All files (*.*)"
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select Media File", "", filters)
+        if file_path:
+            self.le1.setText(file_path)
+
+    def select_media_file_btn2(self):
+        filters = "Media files (*.avi *.mkv *.mpg *.mpeg *.mp4 *.mov *.wmv *.flv *.webm);;All files (*.*)"
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select Media File", "", filters)
+        if file_path:
+            self.le2.setText(file_path)
+
+    def select_subtitle_file_btn3(self):
+        filters = "Subtitle files (*.srt);;All files (*.*)"
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select Subtitle File", "", filters)
+        if file_path:
+            self.le3.setText(file_path)
+
+    def save_subtitle_file_btn4(self):
+        filters = "Subtitle files (*.srt);;All files (*.*)"
+        file_path, _ = QFileDialog.getSaveFileName(self, "Save Subtitle As", "", filters)
+        if file_path:
+            self.le4.setText(file_path)
 
     def align_table_columns_left(self, table):
         header = table.horizontalHeader()
