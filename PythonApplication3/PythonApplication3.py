@@ -1,6 +1,7 @@
 import sys
+import os
 from PyQt5.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QSizePolicy, QFrame, QLabel, QTableWidget, QHeaderView, QFileDialog
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QSizePolicy, QFrame, QLabel, QTableWidget, QHeaderView, QFileDialog, QMessageBox
 )
 from PyQt5.QtCore import Qt
 
@@ -94,10 +95,12 @@ class MainWindow(QWidget):
         # Analyze button
         row5 = QHBoxLayout()
         self.btn5 = QPushButton("Analyze...")
-        #self.btn5.setFixedWidth(220)
         self.btn5.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         row5.addWidget(self.btn5)
         main_layout.addLayout(row5)
+
+        # Connect Analyze button to sanity check
+        self.btn5.clicked.connect(self.sanity_check_files)
 
         # Add a horizontal line as a separator as well as some spacing
         main_layout.addSpacing(10)
@@ -181,6 +184,34 @@ class MainWindow(QWidget):
         file_path, _ = QFileDialog.getSaveFileName(self, "Save Subtitle As", "", filters)
         if file_path:
             self.le4.setText(file_path)
+
+    def sanity_check_files(self):
+        missing_files = []
+        if not self.le1.text() or not os.path.exists(self.le1.text()):
+            missing_files.append("Reference media file")
+        if not self.le2.text() or not os.path.exists(self.le2.text()):
+            missing_files.append("New media file")
+        if not self.le3.text() or not os.path.exists(self.le3.text()):
+            missing_files.append("Reference subtitle file")
+        if not self.le4.text():
+            missing_files.append("Subtitle save path")
+
+        if missing_files:
+            QMessageBox.warning(
+                self,
+                "File(s) not found",
+                "The following file(s) do not exist or are not selected:\n\n" + "\n".join(missing_files)
+            )
+            return False
+        return True
+
+    def on_analyze(self):
+        if not self.sanity_check_files():
+            return
+        # --- Place your main logic here ---
+        # e.g. self.plot1.plot_some_data(...)
+        #      self.do_other_stuff()
+        QMessageBox.information(self, "Sanity Check", "All selected files exist.")
 
     def align_table_columns_left(self, table):
         header = table.horizontalHeader()
