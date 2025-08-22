@@ -19,6 +19,7 @@ class MatplotlibPlotWidget(QFrame):
         self.setFrameStyle(QFrame.Box | QFrame.Plain)
         self.setLineWidth(1)
         self.setMinimumHeight(160)
+        self.setMaximumHeight(160)
         self.window_duration = window_duration  # seconds
         self.samples = None
         self.sr = None
@@ -42,10 +43,19 @@ class MatplotlibPlotWidget(QFrame):
         self.slider.valueChanged.connect(self.update_plot_from_slider)
         layout.addWidget(self.slider)
 
+        # Mouse drag state
+        self._dragging = False
+        self._drag_start_x = None
+        self._drag_start_slider = None
+
+        # Connect matplotlib mouse events
+        self.canvas.mpl_connect("button_press_event", self._on_mouse_press)
+        self.canvas.mpl_connect("button_release_event", self._on_mouse_release)
+        self.canvas.mpl_connect("motion_notify_event", self._on_mouse_move)
+
     def plot_waveform(self, samples, sr):
         self.samples = samples
         self.sr = sr
-        # Calculate total duration
         if samples.ndim > 1:
             samples_mono = samples.mean(axis=0)
         else:
@@ -53,7 +63,6 @@ class MatplotlibPlotWidget(QFrame):
         self.samples_mono = samples_mono
         self.total_duration = len(samples_mono) / sr if sr > 0 else 1
 
-        # Configure slider
         if self.total_duration > self.window_duration:
             max_slider = int(self.total_duration - self.window_duration)
             self.slider.setMaximum(max_slider)
@@ -68,7 +77,6 @@ class MatplotlibPlotWidget(QFrame):
         self._plot_window(value)
 
     def _format_hhmmss(self, seconds, pos=None):
-        """Format seconds to hh:mm:ss for axis."""
         seconds = int(seconds)
         h = seconds // 3600
         m = (seconds % 3600) // 60
@@ -82,24 +90,41 @@ class MatplotlibPlotWidget(QFrame):
         sr = self.sr
         total_len = len(samples_mono)
         t = np.linspace(0, self.total_duration, num=total_len)
-        # Calculate window indices
         _xmin = start_sec
         _xmax = min(start_sec + self.window_duration, self.total_duration)
         idx_min = int(_xmin * sr)
         idx_max = int(_xmax * sr)
         idx_max = min(idx_max, total_len)
-        # Plot
         self.figure.clear()
         ax = self.figure.add_subplot(111)
         ax.plot(t[idx_min:idx_max], samples_mono[idx_min:idx_max], linewidth=0.8)
         ax.set_xlim([_xmin, _xmax])
         ax.set_ylim([-1.05, 1.05])
         ax.set_xlabel('Time (hh:mm:ss)', fontsize=9)
-        ax.set_ylabel('Amplitude', fontsize=8)
-        # Set x-axis formatter to hh:mm:ss
+        ax.set_ylabel('Amplitude', fontsize=9)
         ax.xaxis.set_major_formatter(mticker.FuncFormatter(self._format_hhmmss))
         self.figure.tight_layout()
         self.canvas.draw()
+
+    # --- Mouse drag handlers for panning ---
+    def _on_mouse_press(self, event):
+        if event.button == 1 and event.inaxes:
+            self._dragging = True
+            self._drag_start_x = event.xdata
+            self._drag_start_slider = self.slider.value()
+
+    def _on_mouse_release(self, event):
+        self._dragging = False
+        self._drag_start_x = None
+        self._drag_start_slider = None
+
+    def _on_mouse_move(self, event):
+        if self._dragging and event.inaxes and self._drag_start_x is not None:
+            dx = self._drag_start_x - event.xdata
+            new_slider = int(self._drag_start_slider + dx)
+            new_slider = max(self.slider.minimum(), min(self.slider.maximum(), new_slider))
+            if new_slider != self.slider.value():
+                self.slider.setValue(new_slider)
 
 class MainWindow(QWidget):
     def __init__(self):
