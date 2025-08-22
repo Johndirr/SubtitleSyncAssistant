@@ -26,6 +26,7 @@ class MatplotlibPlotWidget(QFrame):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        # Optionally comment out the next two lines to remove the label above the plot:
         self.label = QLabel(title, self)
         self.label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.label)
@@ -97,13 +98,18 @@ class MatplotlibPlotWidget(QFrame):
         idx_max = min(idx_max, total_len)
         self.figure.clear()
         ax = self.figure.add_subplot(111)
-        ax.plot(t[idx_min:idx_max], samples_mono[idx_min:idx_max], linewidth=0.8)
+        ax.plot(t[idx_min:idx_max], samples_mono[idx_min:idx_max], linewidth=1.0)
         ax.set_xlim([_xmin, _xmax])
         ax.set_ylim([-1.05, 1.05])
-        ax.set_xlabel('Time (hh:mm:ss)', fontsize=9)
-        ax.set_ylabel('Amplitude', fontsize=9)
+        ax.set_xlabel('Time (hh:mm:ss)', fontsize=8, labelpad=2)
+        ax.set_ylabel('Amplitude', fontsize=8, labelpad=2)
         ax.xaxis.set_major_formatter(mticker.FuncFormatter(self._format_hhmmss))
-        self.figure.tight_layout()
+        ax.tick_params(axis='both', which='major', labelsize=7, pad=1)
+        # Remove top/right spines for a cleaner look
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        # Reduce margins
+        self.figure.subplots_adjust(left=0.10, right=0.98, top=0.95, bottom=0.15)
         self.canvas.draw()
 
     # --- Mouse drag handlers for panning ---
