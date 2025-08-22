@@ -18,8 +18,8 @@ class MatplotlibPlotWidget(QFrame):
         super().__init__()
         self.setFrameStyle(QFrame.Box | QFrame.Plain)
         self.setLineWidth(1)
-        self.setMinimumHeight(160)
-        self.setMaximumHeight(160)
+        self.setMinimumHeight(180)
+        self.setMaximumHeight(180)
         self.window_duration = window_duration  # seconds
         self.samples = None
         self.sr = None
@@ -101,15 +101,15 @@ class MatplotlibPlotWidget(QFrame):
         ax.plot(t[idx_min:idx_max], samples_mono[idx_min:idx_max], linewidth=1.0)
         ax.set_xlim([_xmin, _xmax])
         ax.set_ylim([-1.05, 1.05])
-        ax.set_xlabel('Time (hh:mm:ss)', fontsize=8, labelpad=2)
-        ax.set_ylabel('Amplitude', fontsize=8, labelpad=2)
+        #ax.set_xlabel('Time (hh:mm:ss)', fontsize=8, labelpad=2) # commented out to remove x-label
+        ax.set_ylabel('Amplitude', fontsize=8, labelpad=0)
         ax.xaxis.set_major_formatter(mticker.FuncFormatter(self._format_hhmmss))
         ax.tick_params(axis='both', which='major', labelsize=7, pad=1)
         # Remove top/right spines for a cleaner look
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
         # Reduce margins
-        self.figure.subplots_adjust(left=0.10, right=0.98, top=0.95, bottom=0.15)
+        self.figure.subplots_adjust(left=0.05, right=0.98, top=0.95, bottom=0.15)
         self.canvas.draw()
 
     # --- Mouse drag handlers for panning ---
