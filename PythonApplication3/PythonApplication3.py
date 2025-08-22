@@ -16,6 +16,8 @@ from PyQt5.QtGui import QColor
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
+from typing import List, Tuple 
+
 class MatplotlibPlotWidget(QFrame):
     def __init__(self, title="Plot", window_duration=20):
         super().__init__()
@@ -26,6 +28,7 @@ class MatplotlibPlotWidget(QFrame):
         self.window_duration = window_duration  # seconds
         self.samples = None
         self.sr = None
+        self.subtitle_intervals = []  # <-- Add this line
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -87,6 +90,10 @@ class MatplotlibPlotWidget(QFrame):
         s = seconds % 60
         return f"{h:02}:{m:02}:{s:02}"
 
+    def set_selected_subtitle_index(self, index: int):
+        self.selected_subtitle_index = index
+        self._plot_window(self.slider.value())
+
     def _plot_window(self, start_sec):
         if self.samples is None or self.sr is None:
             return
@@ -104,15 +111,23 @@ class MatplotlibPlotWidget(QFrame):
         ax.plot(t[idx_min:idx_max], samples_mono[idx_min:idx_max], linewidth=1.0)
         ax.set_xlim([_xmin, _xmax])
         ax.set_ylim([-1.05, 1.05])
-        #ax.set_xlabel('Time (hh:mm:ss)', fontsize=8, labelpad=2) # commented out to remove x-label
         ax.set_ylabel('Amplitude', fontsize=8, labelpad=0)
         ax.xaxis.set_major_formatter(mticker.FuncFormatter(self._format_hhmmss))
         ax.tick_params(axis='both', which='major', labelsize=7, pad=1)
-        # Remove top/right spines for a cleaner look
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
-        # Reduce margins
         self.figure.subplots_adjust(left=0.05, right=0.98, top=0.95, bottom=0.15)
+        # Draw subtitle bands if present
+        selected_idx = getattr(self, "selected_subtitle_index", None)
+        if hasattr(self, "subtitle_intervals") and self.subtitle_intervals:
+            for i, (start, end) in enumerate(self.subtitle_intervals):
+                if end >= _xmin and start <= _xmax:
+                    color = 'orange'
+                    alpha = 0.18
+                    if selected_idx is not None and i == selected_idx:
+                        color = '#ff9900'  # darker orange
+                        alpha = 0.38
+                    ax.axvspan(max(start, _xmin), min(end, _xmax), color=color, alpha=alpha, zorder=0)
         self.canvas.draw()
 
     # --- Mouse drag handlers for panning ---
@@ -145,6 +160,17 @@ class MatplotlibPlotWidget(QFrame):
                 # Update drag reference to avoid toggling/jumping
                 self._drag_start_x_pixel = event.x
                 self._drag_start_slider = new_slider
+
+    def set_subtitle_intervals(self, intervals: List[Tuple[float, float]]):
+        self.subtitle_intervals = intervals
+        self._plot_window(self.slider.value())
+
+    def plot_subtitle_bands(self, intervals: List[Tuple[float, float]], color='orange', alpha=0.18):
+        """Draw translucent bands for subtitle intervals (list of (start, end) in seconds)."""
+        ax = self.figure.gca()
+        for start, end in intervals:
+            ax.axvspan(start, end, color=color, alpha=alpha, zorder=0)
+        self.canvas.draw()
 
 class MainWindow(QWidget):
     def __init__(self):
@@ -291,6 +317,10 @@ class MainWindow(QWidget):
         self.align_table_columns_left(self.referencetable)
         self.align_table_columns_left(self.synctable)
 
+        # Connect selection changes
+        self.referencetable.selectionModel().selectionChanged.connect(self.on_reference_table_selection)
+        self.synctable.selectionModel().selectionChanged.connect(self.on_sync_table_selection)
+
     def select_media_file_btn1(self):
         filters = "Media files (*.avi *.mkv *.mpg *.mpeg *.mp4 *.mov *.wmv *.flv *.webm);;All files (*.*)"
         file_path, _ = QFileDialog.getOpenFileName(self, "Select Media File", "", filters)
@@ -410,6 +440,32 @@ class MainWindow(QWidget):
         # Align text left for all columns
         self.align_table_columns_left(self.referencetable)
         self.align_table_columns_left(self.synctable)
+
+        # --- Draw subtitle bands in both plots ---
+        # Extract intervals in seconds from pysrt subs
+        intervals = []
+        for sub in subs:
+            start_sec = sub.start.hours * 3600 + sub.start.minutes * 60 + sub.start.seconds + sub.start.milliseconds / 1000.0
+            end_sec = sub.end.hours * 3600 + sub.end.minutes * 60 + sub.end.seconds + sub.end.milliseconds / 1000.0
+            intervals.append((start_sec, end_sec))
+        self.plot1.set_subtitle_intervals(intervals)
+        self.plot2.set_subtitle_intervals(intervals)
+
+    def on_reference_table_selection(self):
+        selected = self.referencetable.selectionModel().selectedRows()
+        if selected:
+            idx = selected[0].row()
+        else:
+            idx = None
+        self.plot1.set_selected_subtitle_index(idx)
+
+    def on_sync_table_selection(self):
+        selected = self.synctable.selectionModel().selectedRows()
+        if selected:
+            idx = selected[0].row()
+        else:
+            idx = None
+        self.plot2.set_selected_subtitle_index(idx)
 
     def align_table_columns_left(self, table):
         header = table.horizontalHeader()
