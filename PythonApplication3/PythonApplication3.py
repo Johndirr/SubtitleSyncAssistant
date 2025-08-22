@@ -4,6 +4,8 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QSizePolicy, QFrame, QLabel, QTableWidget, QHeaderView, QFileDialog, QMessageBox
 )
 from PyQt5.QtCore import Qt
+from pydub import AudioSegment
+import numpy as np
 
 class PlotWidget(QFrame):
     def __init__(self, title="Plot"):
@@ -100,7 +102,7 @@ class MainWindow(QWidget):
         main_layout.addLayout(row5)
 
         # Connect Analyze button to sanity check
-        self.btn5.clicked.connect(self.sanity_check_files)
+        self.btn5.clicked.connect(self.on_analyze)
 
         # Add a horizontal line as a separator as well as some spacing
         main_layout.addSpacing(10)
@@ -205,11 +207,33 @@ class MainWindow(QWidget):
             return False
         return True
 
+    def load_audio_samples(self, filepath):
+        """Load an audio file and return normalized samples (amplitude [-1, 1] as numpy array."""
+        audio = AudioSegment.from_file(filepath)
+        samples = np.array(audio.get_array_of_samples()).astype(np.float32)
+        if audio.channels > 1:
+            samples = samples.reshape((-1, audio.channels)).T
+        # Normalize samples to range [-1, 1]
+        samples = samples / (2 ** (8 * audio.sample_width - 1))
+        # Get the sample rate (Hz)
+        samplerate = audio.frame_rate
+
+        # Downsample if necessary for display (when more than 5 million samples))
+        if samples.size > 5000000:
+            # Downsample to every 10th sample
+            display_samples = samples[::10] if samples.ndim == 1 else samples[:, ::10]
+            display_samplerate = samplerate // 10
+            return display_samples, audio, display_samplerate
+        else:
+            return samples, audio, samplerate
+
     def on_analyze(self):
         if not self.sanity_check_files():
             return
         # --- Place your main logic here ---
-        # e.g. self.plot1.plot_some_data(...)
+        Refsamples, Refaudio, Refsamplerate = self.load_audio_samples(self.le1.text())
+        Newsamples, Newaudio, Newsamplerate = self.load_audio_samples(self.le2.text())
+
         #      self.do_other_stuff()
         QMessageBox.information(self, "Sanity Check", "All selected files exist.")
 
