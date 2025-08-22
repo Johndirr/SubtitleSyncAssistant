@@ -110,21 +110,32 @@ class MatplotlibPlotWidget(QFrame):
     def _on_mouse_press(self, event):
         if event.button == 1 and event.inaxes:
             self._dragging = True
-            self._drag_start_x = event.xdata
+            self._drag_start_x_pixel = event.x  # pixel position
             self._drag_start_slider = self.slider.value()
 
     def _on_mouse_release(self, event):
         self._dragging = False
-        self._drag_start_x = None
+        self._drag_start_x_pixel = None
         self._drag_start_slider = None
 
     def _on_mouse_move(self, event):
-        if self._dragging and event.inaxes and self._drag_start_x is not None:
-            dx = self._drag_start_x - event.xdata
-            new_slider = int(self._drag_start_slider + dx)
+        if self._dragging and event.inaxes and self._drag_start_x_pixel is not None:
+            # Calculate how many seconds per pixel
+            ax = event.inaxes
+            bbox = ax.get_window_extent()
+            axis_width_pixels = bbox.width
+            if axis_width_pixels == 0:
+                return
+            seconds_per_pixel = self.window_duration / axis_width_pixels
+            dx_pixels = self._drag_start_x_pixel - event.x
+            dx_seconds = dx_pixels * seconds_per_pixel
+            new_slider = int(self._drag_start_slider + dx_seconds)
             new_slider = max(self.slider.minimum(), min(self.slider.maximum(), new_slider))
             if new_slider != self.slider.value():
                 self.slider.setValue(new_slider)
+                # Update drag reference to avoid toggling/jumping
+                self._drag_start_x_pixel = event.x
+                self._drag_start_slider = new_slider
 
 class MainWindow(QWidget):
     def __init__(self):
