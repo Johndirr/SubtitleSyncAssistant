@@ -1,54 +1,103 @@
 import sys
 import os
 from PyQt5.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QSizePolicy, QFrame, QLabel, QTableWidget, QHeaderView, QFileDialog, QMessageBox
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QSizePolicy, QFrame, QLabel,
+    QTableWidget, QHeaderView, QFileDialog, QMessageBox, QSlider
 )
 from PyQt5.QtCore import Qt
 from pydub import AudioSegment
 import numpy as np
+import matplotlib.ticker as mticker
 
 # --- Add matplotlib imports ---
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
 class MatplotlibPlotWidget(QFrame):
-    def __init__(self, title="Plot"):
+    def __init__(self, title="Plot", window_duration=20):
         super().__init__()
         self.setFrameStyle(QFrame.Box | QFrame.Plain)
         self.setLineWidth(1)
-        self.setMinimumHeight(120)
+        self.setMinimumHeight(160)
+        self.window_duration = window_duration  # seconds
+        self.samples = None
+        self.sr = None
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self.label = QLabel(title, self)
         self.label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.label)
+
         self.figure = Figure(figsize=(5, 2))
         self.canvas = FigureCanvas(self.figure)
         layout.addWidget(self.canvas)
 
+        # Add slider for scrolling
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setMinimum(0)
+        self.slider.setMaximum(0)
+        self.slider.setValue(0)
+        self.slider.setEnabled(False)
+        self.slider.valueChanged.connect(self.update_plot_from_slider)
+        layout.addWidget(self.slider)
+
     def plot_waveform(self, samples, sr):
-        self.figure.clear()
-        ax = self.figure.add_subplot(111)
-        
-        # Convert to mono if needed
+        self.samples = samples
+        self.sr = sr
+        # Calculate total duration
         if samples.ndim > 1:
             samples_mono = samples.mean(axis=0)
         else:
             samples_mono = samples
-        
-        # Calculate max time for x-axis
-        t = np.linspace(0, len(samples_mono) / sr, num=len(samples_mono))
-        max_time = t[-1] if len(t) > 0 else 1
-        
-        # Set x-axis limits to 20 seconds or less if the audio is shorter
-        _xmin, _xmax = 0, min(20, max_time)
-        
-        # Plot the waveform and set limits and labels
-        ax.plot(t, samples_mono, linewidth=0.8)
+        self.samples_mono = samples_mono
+        self.total_duration = len(samples_mono) / sr if sr > 0 else 1
+
+        # Configure slider
+        if self.total_duration > self.window_duration:
+            max_slider = int(self.total_duration - self.window_duration)
+            self.slider.setMaximum(max_slider)
+            self.slider.setEnabled(True)
+        else:
+            self.slider.setMaximum(0)
+            self.slider.setEnabled(False)
+        self.slider.setValue(0)
+        self._plot_window(0)
+
+    def update_plot_from_slider(self, value):
+        self._plot_window(value)
+
+    def _format_hhmmss(self, seconds, pos=None):
+        """Format seconds to hh:mm:ss for axis."""
+        seconds = int(seconds)
+        h = seconds // 3600
+        m = (seconds % 3600) // 60
+        s = seconds % 60
+        return f"{h:02}:{m:02}:{s:02}"
+
+    def _plot_window(self, start_sec):
+        if self.samples is None or self.sr is None:
+            return
+        samples_mono = self.samples_mono
+        sr = self.sr
+        total_len = len(samples_mono)
+        t = np.linspace(0, self.total_duration, num=total_len)
+        # Calculate window indices
+        _xmin = start_sec
+        _xmax = min(start_sec + self.window_duration, self.total_duration)
+        idx_min = int(_xmin * sr)
+        idx_max = int(_xmax * sr)
+        idx_max = min(idx_max, total_len)
+        # Plot
+        self.figure.clear()
+        ax = self.figure.add_subplot(111)
+        ax.plot(t[idx_min:idx_max], samples_mono[idx_min:idx_max], linewidth=0.8)
         ax.set_xlim([_xmin, _xmax])
         ax.set_ylim([-1.05, 1.05])
-        ax.set_xlabel('Time (s)', fontsize=9)
-        ax.set_ylabel('Amplitude', fontsize=9)
+        ax.set_xlabel('Time (hh:mm:ss)', fontsize=9)
+        ax.set_ylabel('Amplitude', fontsize=8)
+        # Set x-axis formatter to hh:mm:ss
+        ax.xaxis.set_major_formatter(mticker.FuncFormatter(self._format_hhmmss))
         self.figure.tight_layout()
         self.canvas.draw()
 
@@ -146,8 +195,8 @@ class MainWindow(QWidget):
         main_layout.addSpacing(10)
 
         # --- Use MatplotlibPlotWidget for plots ---
-        self.plot1 = MatplotlibPlotWidget("Plot 1")
-        self.plot2 = MatplotlibPlotWidget("Plot 2")
+        self.plot1 = MatplotlibPlotWidget("Reference Audio Waveform")
+        self.plot2 = MatplotlibPlotWidget("New Audio Waveform")
         main_layout.addWidget(self.plot1)
         main_layout.addWidget(self.plot2)
 
