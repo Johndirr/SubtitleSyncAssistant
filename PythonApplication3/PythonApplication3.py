@@ -2,12 +2,15 @@ import sys
 import os
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QSizePolicy, QFrame, QLabel,
-    QTableWidget, QHeaderView, QFileDialog, QMessageBox, QSlider
+    QTableWidget, QTableWidgetItem, QHeaderView, QFileDialog, QMessageBox, QSlider
 )
 from PyQt5.QtCore import Qt
 from pydub import AudioSegment
 import numpy as np
 import matplotlib.ticker as mticker
+
+import pysrt
+from PyQt5.QtGui import QColor
 
 # --- Add matplotlib imports ---
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -258,6 +261,7 @@ class MainWindow(QWidget):
         self.referencetable.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)    # "Start time"
         self.referencetable.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed)    # "End time"
         self.referencetable.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)  # "Text"
+        self.referencetable.setMinimumHeight(300)
 
         # Right table: synctable
         self.synctable = QTableWidget(0, 4)
@@ -271,6 +275,7 @@ class MainWindow(QWidget):
         self.synctable.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed)    # "End time"
         self.synctable.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)  # "Text"
         self.synctable.horizontalHeader().setSectionResizeMode(3, QHeaderView.Fixed)    # "Found offset"
+        self.synctable.setMinimumHeight(300)
 
         tables_row.addWidget(self.referencetable)
         tables_row.addWidget(self.synctable)
@@ -359,6 +364,52 @@ class MainWindow(QWidget):
         # --- Plot the waveforms ---
         self.plot1.plot_waveform(Refsamples, Refsamplerate)
         self.plot2.plot_waveform(Newsamples, Newsamplerate)
+
+        # --- Read subtitle into tables ---
+        # Load the reference subtitle file
+        srt_path = self.le3.text()
+        try:
+            subs = pysrt.open(srt_path, encoding='utf-8')
+        except Exception as e:
+            QMessageBox.critical(self, "Subtitle Error", f"Failed to load subtitle file:\n{e}")
+            return
+
+        # Helper to format time as hh:mm:ss,ms
+        def fmt_time(t):
+            return f"{t.hours:02}:{t.minutes:02}:{t.seconds:02},{t.milliseconds:03}"
+
+        # Fill referencetable
+        self.referencetable.setRowCount(len(subs))
+        for i, sub in enumerate(subs):
+            self.referencetable.setItem(i, 0, QTableWidgetItem(fmt_time(sub.start)))
+            self.referencetable.setItem(i, 1, QTableWidgetItem(fmt_time(sub.end)))
+            self.referencetable.setItem(i, 2, QTableWidgetItem(sub.text))
+            # Alternate row color
+            if i % 2 == 0:
+                for col in range(3):
+                    self.referencetable.item(i, col).setBackground(QColor(245, 245, 245))
+            else:
+                for col in range(3):
+                    self.referencetable.item(i, col).setBackground(QColor(230, 230, 230))
+
+        # Fill synctable (copy original, leave "Found offset" empty)
+        self.synctable.setRowCount(len(subs))
+        for i, sub in enumerate(subs):
+            self.synctable.setItem(i, 0, QTableWidgetItem(fmt_time(sub.start)))
+            self.synctable.setItem(i, 1, QTableWidgetItem(fmt_time(sub.end)))
+            self.synctable.setItem(i, 2, QTableWidgetItem(sub.text))
+            self.synctable.setItem(i, 3, QTableWidgetItem(""))  # Found offset empty
+            # Alternate row color
+            if i % 2 == 0:
+                for col in range(4):
+                    self.synctable.item(i, col).setBackground(QColor(245, 245, 245))
+            else:
+                for col in range(4):
+                    self.synctable.item(i, col).setBackground(QColor(230, 230, 230))
+
+        # Align text left for all columns
+        self.align_table_columns_left(self.referencetable)
+        self.align_table_columns_left(self.synctable)
 
     def align_table_columns_left(self, table):
         header = table.horizontalHeader()
