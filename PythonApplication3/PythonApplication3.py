@@ -7,22 +7,56 @@ from PyQt5.QtCore import Qt
 from pydub import AudioSegment
 import numpy as np
 
-class PlotWidget(QFrame):
+# --- Add matplotlib imports ---
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+
+class MatplotlibPlotWidget(QFrame):
     def __init__(self, title="Plot"):
         super().__init__()
         self.setFrameStyle(QFrame.Box | QFrame.Plain)
         self.setLineWidth(1)
         self.setMinimumHeight(120)
-        label = QLabel(title, self)
-        label.setAlignment(Qt.AlignCenter)
         layout = QVBoxLayout(self)
-        layout.addWidget(label)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.label = QLabel(title, self)
+        self.label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.label)
+        self.figure = Figure(figsize=(5, 2))
+        self.canvas = FigureCanvas(self.figure)
+        layout.addWidget(self.canvas)
+
+    def plot_waveform(self, samples, sr):
+        self.figure.clear()
+        ax = self.figure.add_subplot(111)
+        
+        # Convert to mono if needed
+        if samples.ndim > 1:
+            samples_mono = samples.mean(axis=0)
+        else:
+            samples_mono = samples
+        
+        # Calculate max time for x-axis
+        t = np.linspace(0, len(samples_mono) / sr, num=len(samples_mono))
+        max_time = t[-1] if len(t) > 0 else 1
+        
+        # Set x-axis limits to 20 seconds or less if the audio is shorter
+        _xmin, _xmax = 0, min(20, max_time)
+        
+        # Plot the waveform and set limits and labels
+        ax.plot(t, samples_mono, linewidth=0.8)
+        ax.set_xlim([_xmin, _xmax])
+        ax.set_ylim([-1.05, 1.05])
+        ax.set_xlabel('Time (s)', fontsize=9)
+        ax.set_ylabel('Amplitude', fontsize=9)
+        self.figure.tight_layout()
+        self.canvas.draw()
 
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Button-LineEdit Pairs Example")
-        self.resize(1024, 600)  # Increased height for tables
+        self.resize(1024, 600)
         self.init_ui()
 
     def init_ui(self):
@@ -100,8 +134,6 @@ class MainWindow(QWidget):
         self.btn5.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         row5.addWidget(self.btn5)
         main_layout.addLayout(row5)
-
-        # Connect Analyze button to sanity check
         self.btn5.clicked.connect(self.on_analyze)
 
         # Add a horizontal line as a separator as well as some spacing
@@ -113,11 +145,11 @@ class MainWindow(QWidget):
         main_layout.addWidget(separator)
         main_layout.addSpacing(10)
 
-        # Two PlotWidgets below the pairs, stacked vertically
-        plot1 = PlotWidget("Plot 1")
-        plot2 = PlotWidget("Plot 2")
-        main_layout.addWidget(plot1)
-        main_layout.addWidget(plot2)
+        # --- Use MatplotlibPlotWidget for plots ---
+        self.plot1 = MatplotlibPlotWidget("Plot 1")
+        self.plot2 = MatplotlibPlotWidget("Plot 2")
+        main_layout.addWidget(self.plot1)
+        main_layout.addWidget(self.plot2)
 
         # Add some spacing before the tables
         main_layout.addSpacing(10)
@@ -230,12 +262,12 @@ class MainWindow(QWidget):
     def on_analyze(self):
         if not self.sanity_check_files():
             return
-        # --- Place your main logic here ---
         Refsamples, Refaudio, Refsamplerate = self.load_audio_samples(self.le1.text())
         Newsamples, Newaudio, Newsamplerate = self.load_audio_samples(self.le2.text())
 
-        #      self.do_other_stuff()
-        QMessageBox.information(self, "Sanity Check", "All selected files exist.")
+        # --- Plot the waveforms ---
+        self.plot1.plot_waveform(Refsamples, Refsamplerate)
+        self.plot2.plot_waveform(Newsamples, Newsamplerate)
 
     def align_table_columns_left(self, table):
         header = table.horizontalHeader()
