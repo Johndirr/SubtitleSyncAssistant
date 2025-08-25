@@ -262,7 +262,8 @@ class MainWindow(QWidget):
         self.referencetable.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.referencetable.setMinimumHeight(300)
         self.referencetable.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.referencetable.setSelectionMode(QAbstractItemView.SingleSelection)
+        # Allow multi-row selection (Ctrl / Shift click)
+        self.referencetable.setSelectionMode(QAbstractItemView.ExtendedSelection)
 
         self.synctable = QTableWidget(0, 4)
         self.synctable.setHorizontalHeaderLabels(["Start time", "End time", "Text", "Found offset"])
@@ -276,7 +277,8 @@ class MainWindow(QWidget):
         self.synctable.horizontalHeader().setSectionResizeMode(3, QHeaderView.Fixed)
         self.synctable.setMinimumHeight(300)
         self.synctable.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.synctable.setSelectionMode(QAbstractItemView.SingleSelection)
+        # Allow multi-row selection (Ctrl / Shift click)
+        self.synctable.setSelectionMode(QAbstractItemView.ExtendedSelection)
 
         # Add context menu for sync table
         self.synctable.setContextMenuPolicy(Qt.CustomContextMenu)
