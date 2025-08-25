@@ -453,6 +453,9 @@ class MainWindow(QWidget):
         file_path, _ = QFileDialog.getOpenFileName(self, "Select Subtitle File", "", filters)
         if file_path:
             self.le3.setText(file_path)
+            # Auto-fill save subtitle path with "_resync" appended before extension
+            base, ext = os.path.splitext(file_path)
+            self.le4.setText(f"{base}_resync{ext}")
 
     def save_subtitle_file_btn4(self):
         filters = "Subtitle files (*.srt);;All files (*.*)"
