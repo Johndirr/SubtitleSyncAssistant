@@ -60,6 +60,34 @@ class MatplotlibPlotWidget(QFrame):
         self.canvas.mpl_connect("button_release_event", self._on_mouse_release)
         self.canvas.mpl_connect("motion_notify_event", self._on_mouse_move)
 
+    # --- NEW: programmatic jump helper ---
+    def jump_to_time(self, target_sec: float, center: bool = True):
+        """
+        Scroll the window so that target_sec is visible (optionally centered) and refresh plot.
+        """
+        if self.samples is None or self.sr is None:
+            return
+        if self.total_duration <= self.window_duration:
+            # Whole signal already visible
+            self._plot_window(0)
+            return
+
+        if center:
+            start = target_sec - self.window_duration / 2.0
+        else:
+            start = target_sec
+
+        start = max(0.0, min(start, self.total_duration - self.window_duration))
+
+        # Update slider (integer seconds resolution)
+        slider_value = int(start)
+        signals_were_blocked = self.slider.blockSignals(True)
+        self.slider.setValue(slider_value)
+        self.slider.blockSignals(signals_were_blocked)
+
+        # Plot with the (possibly fractional) start for better centering
+        self._plot_window(start)
+
     def plot_waveform(self, samples, sr):
         self.samples = samples
         self.sr = sr
@@ -322,11 +350,13 @@ class MainWindow(QWidget):
     def show_synctable_context_menu(self, pos):
         menu = QMenu(self)
         act_play = QAction("Play", self)
+        act_jump = QAction("Jump to", self)   # NEW
         act_delete = QAction("Delete line(s)", self)
         act_shift_sel = QAction("Shift times for selected line(s)", self)
         act_shift_all = QAction("Shift all times", self)
 
         menu.addAction(act_play)
+        menu.addAction(act_jump)              # NEW
         menu.addSeparator()
         menu.addAction(act_delete)
         menu.addSeparator()
@@ -334,6 +364,7 @@ class MainWindow(QWidget):
         menu.addAction(act_shift_all)
 
         act_play.triggered.connect(self.synctable_play_selected)
+        act_jump.triggered.connect(self.synctable_jump_to_selected)   # NEW
         act_delete.triggered.connect(self.synctable_delete_selected)
         act_shift_sel.triggered.connect(lambda: self.shift_times(selected_only=True))
         act_shift_all.triggered.connect(lambda: self.shift_times(selected_only=False))
@@ -341,11 +372,14 @@ class MainWindow(QWidget):
         menu.exec_(self.synctable.viewport().mapToGlobal(pos))
 
     def show_referencetable_context_menu(self, pos):
-        """Context menu for reference table (Play only)."""
+        """Context menu for reference table (Play only + Jump)."""
         menu = QMenu(self)
         act_play = QAction("Play", self)
+        act_jump = QAction("Jump to", self)    # NEW
         menu.addAction(act_play)
+        menu.addAction(act_jump)               # NEW
         act_play.triggered.connect(self.referencetable_play_selected)
+        act_jump.triggered.connect(self.referencetable_jump_to_selected)  # NEW
         menu.exec_(self.referencetable.viewport().mapToGlobal(pos))
 
     def referencetable_play_selected(self):
@@ -750,6 +784,41 @@ class MainWindow(QWidget):
             # self.audio_output = None
             # self.audio_buffer = None
             # self.audio_data = None
+
+    # --- NEW: Jump handlers ---
+    def referencetable_jump_to_selected(self):
+        """Scroll first plot to (earliest) selected reference subtitle start time."""
+        selected = self.referencetable.selectionModel().selectedRows()
+        if not selected:
+            return
+        # Use earliest start among selections
+        starts = []
+        for s in selected:
+            item = self.referencetable.item(s.row(), 0)
+            if item:
+                starts.append(self._parse_time_to_seconds(item.text()))
+        if not starts:
+            return
+        target = min(starts)
+        self.plot1.jump_to_time(target, center=True)
+        # Keep highlighting consistent
+        self.plot1.set_selected_subtitle_indices([r.row() for r in selected])
+
+    def synctable_jump_to_selected(self):
+        """Scroll second plot to (earliest) selected sync (new media) subtitle start time."""
+        selected = self.synctable.selectionModel().selectedRows()
+        if not selected:
+            return
+        starts = []
+        for s in selected:
+            item = self.synctable.item(s.row(), 0)
+            if item:
+                starts.append(self._parse_time_to_seconds(item.text()))
+        if not starts:
+            return
+        target = min(starts)
+        self.plot2.jump_to_time(target, center=True)
+        self.plot2.set_selected_subtitle_indices([r.row() for r in selected])
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
