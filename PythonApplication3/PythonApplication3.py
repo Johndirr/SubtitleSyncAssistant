@@ -2,7 +2,8 @@ import sys
 import os
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QSizePolicy, QFrame, QLabel,
-    QTableWidget, QTableWidgetItem, QHeaderView, QFileDialog, QMessageBox, QSlider, QAbstractItemView
+    QTableWidget, QTableWidgetItem, QHeaderView, QFileDialog, QMessageBox, QSlider, QAbstractItemView,
+    QMenu, QAction, QInputDialog
 )
 from PyQt5.QtCore import Qt
 from pydub import AudioSegment
@@ -16,7 +17,7 @@ from PyQt5.QtGui import QColor
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
-from typing import List, Tuple 
+from typing import List, Tuple
 
 class MatplotlibPlotWidget(QFrame):
     def __init__(self, title="Plot", window_duration=20):
@@ -28,7 +29,7 @@ class MatplotlibPlotWidget(QFrame):
         self.window_duration = window_duration  # seconds
         self.samples = None
         self.sr = None
-        self.subtitle_intervals = []  # <-- Add this line
+        self.subtitle_intervals: List[Tuple[float, float]] = []
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -117,24 +118,22 @@ class MatplotlibPlotWidget(QFrame):
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
         self.figure.subplots_adjust(left=0.05, right=0.98, top=0.95, bottom=0.15)
-        # Draw subtitle bands if present
         selected_idx = getattr(self, "selected_subtitle_index", None)
-        if hasattr(self, "subtitle_intervals") and self.subtitle_intervals:
+        if self.subtitle_intervals:
             for i, (start, end) in enumerate(self.subtitle_intervals):
                 if end >= _xmin and start <= _xmax:
                     color = 'orange'
                     alpha = 0.18
                     if selected_idx is not None and i == selected_idx:
-                        color = '#ff9900'  # darker orange
+                        color = '#ff9900'
                         alpha = 0.38
                     ax.axvspan(max(start, _xmin), min(end, _xmax), color=color, alpha=alpha, zorder=0)
         self.canvas.draw()
 
-    # --- Mouse drag handlers for panning ---
     def _on_mouse_press(self, event):
         if event.button == 1 and event.inaxes:
             self._dragging = True
-            self._drag_start_x_pixel = event.x  # pixel position
+            self._drag_start_x_pixel = event.x
             self._drag_start_slider = self.slider.value()
 
     def _on_mouse_release(self, event):
@@ -184,74 +183,52 @@ class MainWindow(QWidget):
         main_layout.setContentsMargins(12, 12, 12, 12)
         main_layout.setSpacing(2)
 
-        # Pair 1: Load reference media file
         row1 = QHBoxLayout()
         self.btn1 = QPushButton("Load reference media file")
         self.btn1.setFixedWidth(220)
-        self.btn1.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.le1 = QLineEdit()
         self.le1.setPlaceholderText("No file selected")
-        self.le1.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.le1.setReadOnly(True)  # Make not editable
+        self.le1.setReadOnly(True)
         row1.addWidget(self.btn1)
         row1.addWidget(self.le1)
         main_layout.addLayout(row1)
-
-        # Connect btn1 to file dialog
         self.btn1.clicked.connect(self.select_media_file_btn1)
 
-        # Pair 2: Load new media file
         row2 = QHBoxLayout()
         self.btn2 = QPushButton("Load new media file")
         self.btn2.setFixedWidth(220)
-        self.btn2.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.le2 = QLineEdit()
         self.le2.setPlaceholderText("No file selected")
-        self.le2.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.le2.setReadOnly(True)  # Make not editable
+        self.le2.setReadOnly(True)
         row2.addWidget(self.btn2)
         row2.addWidget(self.le2)
         main_layout.addLayout(row2)
-
-        # Connect btn2 to file dialog
         self.btn2.clicked.connect(self.select_media_file_btn2)
 
-        # Pair 3: Load reference subtitle
         row3 = QHBoxLayout()
         self.btn3 = QPushButton("Load reference subtitle")
         self.btn3.setFixedWidth(220)
-        self.btn3.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.le3 = QLineEdit()
         self.le3.setPlaceholderText("No file selected")
-        self.le3.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.le3.setReadOnly(True)  # Make not editable
+        self.le3.setReadOnly(True)
         row3.addWidget(self.btn3)
         row3.addWidget(self.le3)
         main_layout.addLayout(row3)
-
-        # Connect btn3 to file dialog for .srt files
         self.btn3.clicked.connect(self.select_subtitle_file_btn3)
 
-        # Pair 4: Save subtitle under...
         row4 = QHBoxLayout()
         self.btn4 = QPushButton("Save subtitle under...")
         self.btn4.setFixedWidth(220)
-        self.btn4.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.le4 = QLineEdit()
         self.le4.setPlaceholderText("No file selected")
-        self.le4.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.le4.setReadOnly(True)  # Make not editable
+        self.le4.setReadOnly(True)
         row4.addWidget(self.btn4)
         row4.addWidget(self.le4)
         main_layout.addLayout(row4)
-
-        # Connect btn4 to file save dialog
         self.btn4.clicked.connect(self.save_subtitle_file_btn4)
 
-        # Analyze button
         row5 = QHBoxLayout()
         self.btn5 = QPushButton("Analyze...")
-        self.btn5.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         row5.addWidget(self.btn5)
         main_layout.addLayout(row5)
         self.btn5.clicked.connect(self.on_analyze)
@@ -271,62 +248,180 @@ class MainWindow(QWidget):
         main_layout.addWidget(self.plot1)
         main_layout.addWidget(self.plot2)
 
-        # Add some spacing before the tables
         main_layout.addSpacing(10)
 
-        # Add two tables side by side below the plots, and make them expand to fill the remaining space
         tables_row = QHBoxLayout()
 
-        # Left table: referencetable
         self.referencetable = QTableWidget(0, 3)
         self.referencetable.setHorizontalHeaderLabels(["Start time", "End time", "Text"])
         self.referencetable.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.referencetable.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.referencetable.setColumnWidth(0, 100)
         self.referencetable.setColumnWidth(1, 100)
-        self.referencetable.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)    # "Start time"
-        self.referencetable.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed)    # "End time"
-        self.referencetable.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)  # "Text"
+        self.referencetable.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
+        self.referencetable.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed)
+        self.referencetable.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.referencetable.setMinimumHeight(300)
-        # Force whole-row selection only
         self.referencetable.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.referencetable.setSelectionMode(QAbstractItemView.SingleSelection)
 
-        # Right table: synctable
         self.synctable = QTableWidget(0, 4)
         self.synctable.setHorizontalHeaderLabels(["Start time", "End time", "Text", "Found offset"])
         self.synctable.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.synctable.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.synctable.setColumnWidth(0, 100)
         self.synctable.setColumnWidth(1, 100)
         self.synctable.setColumnWidth(3, 100)
-        self.synctable.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)    # "Start time"
-        self.synctable.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed)    # "End time"
-        self.synctable.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)  # "Text"
-        self.synctable.horizontalHeader().setSectionResizeMode(3, QHeaderView.Fixed)    # "Found offset"
+        self.synctable.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
+        self.synctable.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed)
+        self.synctable.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.synctable.horizontalHeader().setSectionResizeMode(3, QHeaderView.Fixed)
         self.synctable.setMinimumHeight(300)
-        # Force whole-row selection only
         self.synctable.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.synctable.setSelectionMode(QAbstractItemView.SingleSelection)
 
+        # Add context menu for sync table
+        self.synctable.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.synctable.customContextMenuRequested.connect(self.show_synctable_context_menu)
+
         tables_row.addWidget(self.referencetable)
         tables_row.addWidget(self.synctable)
-        tables_row.setContentsMargins(0, 0, 0, 0) # Remove margins between tables so that they have the same width as the plots
+        tables_row.setContentsMargins(0, 0, 0, 0)
 
-        # Use a container widget for the tables and set its size policy to expanding
         tables_container = QWidget()
         tables_container.setLayout(tables_row)
         tables_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         main_layout.addWidget(tables_container)
 
-        # Align all columns' text to the left for both tables
         self.align_table_columns_left(self.referencetable)
         self.align_table_columns_left(self.synctable)
 
-        # Connect selection changes
         self.referencetable.selectionModel().selectionChanged.connect(self.on_reference_table_selection)
         self.synctable.selectionModel().selectionChanged.connect(self.on_sync_table_selection)
 
+    # --- Context menu handlers ---
+    def show_synctable_context_menu(self, pos):
+        menu = QMenu(self)
+        act_play = QAction("Play", self)
+        act_delete = QAction("Delete line(s)", self)
+        act_shift_sel = QAction("Shift times for selected line(s)", self)
+        act_shift_all = QAction("Shift all times", self)
+
+        menu.addAction(act_play)
+        menu.addSeparator()
+        menu.addAction(act_delete)
+        menu.addSeparator()
+        menu.addAction(act_shift_sel)
+        menu.addAction(act_shift_all)
+
+        act_play.triggered.connect(self.synctable_play_selected)
+        act_delete.triggered.connect(self.synctable_delete_selected)
+        act_shift_sel.triggered.connect(lambda: self.shift_times(selected_only=True))
+        act_shift_all.triggered.connect(lambda: self.shift_times(selected_only=False))
+
+        menu.exec_(self.synctable.viewport().mapToGlobal(pos))
+
+    def _parse_time_to_seconds(self, text: str) -> float:
+        # Format: hh:mm:ss,ms
+        try:
+            h, m, rest = text.split(":")
+            s, ms = rest.split(",")
+            return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000.0
+        except Exception:
+            return 0.0
+
+    def _format_seconds_to_time(self, seconds: float) -> str:
+        if seconds < 0:
+            seconds = 0.0
+        h = int(seconds // 3600)
+        m = int((seconds % 3600) // 60)
+        s = int(seconds % 60)
+        ms = int(round((seconds - int(seconds)) * 1000))
+        if ms == 1000:  # handle rounding overflow
+            ms = 0
+            s += 1
+            if s == 60:
+                s = 0
+                m += 1
+                if m == 60:
+                    m = 0
+                    h += 1
+        return f"{h:02}:{m:02}:{s:02},{ms:03}"
+
+    def shift_times(self, selected_only: bool):
+        if selected_only:
+            selected_rows = [idx.row() for idx in self.synctable.selectionModel().selectedRows()]
+            if not selected_rows:
+                QMessageBox.information(self, "Shift Times", "No row selected.")
+                return
+            target_rows = selected_rows
+            caption = "Shift selected line(s) (seconds, e.g. -1.250 or 1,25):"
+        else:
+            if self.synctable.rowCount() == 0:
+                QMessageBox.information(self, "Shift Times", "No lines to shift.")
+                return
+            target_rows = list(range(self.synctable.rowCount()))
+            caption = "Shift all lines (seconds, e.g. -1.250 or 2,5):"
+
+        val_str, ok = QInputDialog.getText(self, "Shift Times", caption, text="0.000")
+        if not ok or not val_str.strip():
+            return
+        val_str = val_str.replace(",", ".")
+        try:
+            delta = float(val_str)
+        except ValueError:
+            QMessageBox.warning(self, "Invalid Input", "Could not parse the shift value.")
+            return
+
+        # Apply shift
+        for row in target_rows:
+            start_item = self.synctable.item(row, 0)
+            end_item = self.synctable.item(row, 1)
+            if not start_item or not end_item:
+                continue
+            start_sec = self._parse_time_to_seconds(start_item.text())
+            end_sec = self._parse_time_to_seconds(end_item.text())
+
+            start_sec += delta
+            end_sec += delta
+            if end_sec < start_sec:  # keep ordering sane
+                end_sec = start_sec
+
+            start_item.setText(self._format_seconds_to_time(start_sec))
+            end_item.setText(self._format_seconds_to_time(end_sec))
+
+        # Update plot2 bands to reflect new times
+        self.plot2.set_subtitle_intervals(self._collect_synctable_intervals())
+
+    def _collect_synctable_intervals(self) -> List[Tuple[float, float]]:
+        intervals: List[Tuple[float, float]] = []
+        for row in range(self.synctable.rowCount()):
+            start_item = self.synctable.item(row, 0)
+            end_item = self.synctable.item(row, 1)
+            if not start_item or not end_item:
+                continue
+            start_sec = self._parse_time_to_seconds(start_item.text())
+            end_sec = self._parse_time_to_seconds(end_item.text())
+            intervals.append((start_sec, end_sec))
+        return intervals
+
+    def synctable_play_selected(self):
+        selected = self.synctable.selectionModel().selectedRows()
+        if not selected:
+            QMessageBox.information(self, "Play", "No row selected.")
+            return
+        idx = selected[0].row()
+        QMessageBox.information(self, "Play", f"Play subtitle at row {idx + 1}")
+
+    def synctable_delete_selected(self):
+        selected = self.synctable.selectionModel().selectedRows()
+        if not selected:
+            return
+        rows = sorted((s.row() for s in selected), reverse=True)
+        for r in rows:
+            self.synctable.removeRow(r)
+        # Refresh intervals in plot2
+        self.plot2.set_subtitle_intervals(self._collect_synctable_intervals())
+
+    # --- Existing helper / UI methods ---
     def select_media_file_btn1(self):
         filters = "Media files (*.avi *.mkv *.mpg *.mpeg *.mp4 *.mov *.wmv *.flv *.webm);;All files (*.*)"
         file_path, _ = QFileDialog.getOpenFileName(self, "Select Media File", "", filters)
@@ -361,13 +456,9 @@ class MainWindow(QWidget):
             missing_files.append("Reference subtitle file")
         if not self.le4.text():
             missing_files.append("Subtitle save path")
-
         if missing_files:
-            QMessageBox.warning(
-                self,
-                "File(s) not found",
-                "The following file(s) do not exist or are not selected:\n\n" + "\n".join(missing_files)
-            )
+            QMessageBox.warning(self, "File(s) not found",
+                                "The following file(s) do not exist or are not selected:\n\n" + "\n".join(missing_files))
             return False
         return True
 
@@ -394,15 +485,12 @@ class MainWindow(QWidget):
     def on_analyze(self):
         if not self.sanity_check_files():
             return
-        Refsamples, Refaudio, Refsamplerate = self.load_audio_samples(self.le1.text())
-        Newsamples, Newaudio, Newsamplerate = self.load_audio_samples(self.le2.text())
+        Refsamples, _, RefRate = self.load_audio_samples(self.le1.text())
+        Newsamples, _, NewRate = self.load_audio_samples(self.le2.text())
 
-        # --- Plot the waveforms ---
-        self.plot1.plot_waveform(Refsamples, Refsamplerate)
-        self.plot2.plot_waveform(Newsamples, Newsamplerate)
+        self.plot1.plot_waveform(Refsamples, RefRate)
+        self.plot2.plot_waveform(Newsamples, NewRate)
 
-        # --- Read subtitle into tables ---
-        # Load the reference subtitle file
         srt_path = self.le3.text()
         try:
             subs = pysrt.open(srt_path, encoding='utf-8')
@@ -420,35 +508,23 @@ class MainWindow(QWidget):
             self.referencetable.setItem(i, 0, QTableWidgetItem(fmt_time(sub.start)))
             self.referencetable.setItem(i, 1, QTableWidgetItem(fmt_time(sub.end)))
             self.referencetable.setItem(i, 2, QTableWidgetItem(sub.text))
-            # Alternate row color
-            if i % 2 == 0:
-                for col in range(3):
-                    self.referencetable.item(i, col).setBackground(QColor(245, 245, 245))
-            else:
-                for col in range(3):
-                    self.referencetable.item(i, col).setBackground(QColor(230, 230, 230))
+            bg = QColor(245, 245, 245) if i % 2 == 0 else QColor(230, 230, 230)
+            for c in range(3):
+                self.referencetable.item(i, c).setBackground(bg)
 
-        # Fill synctable (copy original, leave "Found offset" empty)
         self.synctable.setRowCount(len(subs))
         for i, sub in enumerate(subs):
             self.synctable.setItem(i, 0, QTableWidgetItem(fmt_time(sub.start)))
             self.synctable.setItem(i, 1, QTableWidgetItem(fmt_time(sub.end)))
             self.synctable.setItem(i, 2, QTableWidgetItem(sub.text))
-            self.synctable.setItem(i, 3, QTableWidgetItem(""))  # Found offset empty
-            # Alternate row color
-            if i % 2 == 0:
-                for col in range(4):
-                    self.synctable.item(i, col).setBackground(QColor(245, 245, 245))
-            else:
-                for col in range(4):
-                    self.synctable.item(i, col).setBackground(QColor(230, 230, 230))
+            self.synctable.setItem(i, 3, QTableWidgetItem(""))
+            bg = QColor(245, 245, 245) if i % 2 == 0 else QColor(230, 230, 230)
+            for c in range(4):
+                self.synctable.item(i, c).setBackground(bg)
 
-        # Align text left for all columns
         self.align_table_columns_left(self.referencetable)
         self.align_table_columns_left(self.synctable)
 
-        # --- Draw subtitle bands in both plots ---
-        # Extract intervals in seconds from pysrt subs
         intervals = []
         for sub in subs:
             start_sec = sub.start.hours * 3600 + sub.start.minutes * 60 + sub.start.seconds + sub.start.milliseconds / 1000.0
@@ -459,32 +535,23 @@ class MainWindow(QWidget):
 
     def on_reference_table_selection(self):
         selected = self.referencetable.selectionModel().selectedRows()
-        if selected:
-            idx = selected[0].row()
-        else:
-            idx = None
+        idx = selected[0].row() if selected else None
         self.plot1.set_selected_subtitle_index(idx)
 
     def on_sync_table_selection(self):
         selected = self.synctable.selectionModel().selectedRows()
-        if selected:
-            idx = selected[0].row()
-        else:
-            idx = None
+        idx = selected[0].row() if selected else None
         self.plot2.set_selected_subtitle_index(idx)
 
     def align_table_columns_left(self, table):
-        header = table.horizontalHeader()
         for col in range(table.columnCount()):
-            # Set alignment for header
-            item = table.horizontalHeaderItem(col)
-            if item is not None:
-                item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            # Set alignment for all existing cells in this column
+            header_item = table.horizontalHeaderItem(col)
+            if header_item:
+                header_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             for row in range(table.rowCount()):
-                cell = table.item(row, col)
-                if cell is not None:
-                    cell.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                it = table.item(row, col)
+                if it:
+                    it.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
