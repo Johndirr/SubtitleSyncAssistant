@@ -30,6 +30,7 @@ class MatplotlibPlotWidget(QFrame):
         self.samples = None
         self.sr = None
         self.subtitle_intervals: List[Tuple[float, float]] = []
+        self.selected_subtitle_indices: set[int] = set()  # support multi-selection
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -91,8 +92,17 @@ class MatplotlibPlotWidget(QFrame):
         s = seconds % 60
         return f"{h:02}:{m:02}:{s:02}"
 
+    def set_selected_subtitle_indices(self, indices: List[int]):
+        """Set (possibly multiple) selected subtitle indices to highlight."""
+        self.selected_subtitle_indices = set(i for i in indices if i is not None)
+        self._plot_window(self.slider.value())
+
     def set_selected_subtitle_index(self, index: int):
-        self.selected_subtitle_index = index
+        """Backward compatible single selection API."""
+        if index is None:
+            self.selected_subtitle_indices = set()
+        else:
+            self.selected_subtitle_indices = {index}
         self._plot_window(self.slider.value())
 
     def _plot_window(self, start_sec):
@@ -118,13 +128,15 @@ class MatplotlibPlotWidget(QFrame):
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
         self.figure.subplots_adjust(left=0.05, right=0.98, top=0.95, bottom=0.15)
-        selected_idx = getattr(self, "selected_subtitle_index", None)
+        selected_indices = getattr(self, "selected_subtitle_indices", set())
         if self.subtitle_intervals:
             for i, (start, end) in enumerate(self.subtitle_intervals):
                 if end >= _xmin and start <= _xmax:
+                    # default band
                     color = 'orange'
                     alpha = 0.18
-                    if selected_idx is not None and i == selected_idx:
+                    # highlight if selected
+                    if i in selected_indices:
                         color = '#ff9900'
                         alpha = 0.38
                     ax.axvspan(max(start, _xmin), min(end, _xmax), color=color, alpha=alpha, zorder=0)
@@ -537,13 +549,13 @@ class MainWindow(QWidget):
 
     def on_reference_table_selection(self):
         selected = self.referencetable.selectionModel().selectedRows()
-        idx = selected[0].row() if selected else None
-        self.plot1.set_selected_subtitle_index(idx)
+        indices = [idx.row() for idx in selected]
+        self.plot1.set_selected_subtitle_indices(indices)
 
     def on_sync_table_selection(self):
         selected = self.synctable.selectionModel().selectedRows()
-        idx = selected[0].row() if selected else None
-        self.plot2.set_selected_subtitle_index(idx)
+        indices = [idx.row() for idx in selected]
+        self.plot2.set_selected_subtitle_indices(indices)
 
     def align_table_columns_left(self, table):
         for col in range(table.columnCount()):
