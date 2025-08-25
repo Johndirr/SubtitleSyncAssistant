@@ -2,7 +2,7 @@ import sys
 import os
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QSizePolicy, QFrame, QLabel,
-    QTableWidget, QTableWidgetItem, QHeaderView, QFileDialog, QMessageBox, QSlider
+    QTableWidget, QTableWidgetItem, QHeaderView, QFileDialog, QMessageBox, QSlider, QAbstractItemView
 )
 from PyQt5.QtCore import Qt
 from pydub import AudioSegment
@@ -288,6 +288,9 @@ class MainWindow(QWidget):
         self.referencetable.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed)    # "End time"
         self.referencetable.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)  # "Text"
         self.referencetable.setMinimumHeight(300)
+        # Force whole-row selection only
+        self.referencetable.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.referencetable.setSelectionMode(QAbstractItemView.SingleSelection)
 
         # Right table: synctable
         self.synctable = QTableWidget(0, 4)
@@ -302,6 +305,9 @@ class MainWindow(QWidget):
         self.synctable.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)  # "Text"
         self.synctable.horizontalHeader().setSectionResizeMode(3, QHeaderView.Fixed)    # "Found offset"
         self.synctable.setMinimumHeight(300)
+        # Force whole-row selection only
+        self.synctable.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.synctable.setSelectionMode(QAbstractItemView.SingleSelection)
 
         tables_row.addWidget(self.referencetable)
         tables_row.addWidget(self.synctable)
