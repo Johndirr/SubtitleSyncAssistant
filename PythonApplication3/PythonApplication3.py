@@ -435,7 +435,7 @@ class OffsetWorker(QObject):
 
 class BusyDialog(QDialog):
     """
-    Simple modal dialog with a label + animated (pulsing) QProgressBar.
+    Simple modal dialog with a label + indeterminate QProgressBar (built‑in marquee style).
     Removes the Windows "?" help button for a cleaner look.
     """
     def __init__(self, parent=None, title="Working", message="Please wait..."):
@@ -452,19 +452,10 @@ class BusyDialog(QDialog):
         layout.addWidget(self.label)
 
         self.bar = QProgressBar(self)
-        self.bar.setRange(0, 100)  # determinate range (we animate ourselves)
-        self.bar.setValue(0)
+        # Indeterminate style: range (0,0) -> platform draws animated marquee (no percentage).
+        self.bar.setRange(0, 0)
+        self.bar.setTextVisible(False)
         layout.addWidget(self.bar)
-
-        self._pulse_value = 0
-        self._pulse_timer = QTimer(self)
-        self._pulse_timer.timeout.connect(self._pulse)
-        self._pulse_timer.start(60)  # ~16 FPS (1000/60ms) -> smooth enough
-
-    def _pulse(self):
-        """Simple wrap-around pulsing animation (0..100)."""
-        self._pulse_value = (self._pulse_value + 3) % 101
-        self.bar.setValue(self._pulse_value)
 
     def set_message(self, text: str):
         """Update message (safe to call from queued signal in GUI thread)."""
