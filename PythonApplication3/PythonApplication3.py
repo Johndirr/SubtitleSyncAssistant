@@ -283,29 +283,44 @@ class AnalyzeWorker(QObject):
 
     def run(self):
         """
-        Main execution routine. Emits progress updates.
-        Packs all data needed for UI consumption in one dict and emits finished.
+        Orchestrates the background 'analysis' phase:
+          1. Emits staged progress messages (GUI updates BusyDialog text).
+          2. Loads both media files (full-quality kept in result, downsampled arrays for plotting).
+          3. Parses the subtitle (.srt) file into row dicts.
+          4. Builds (start,end) intervals (seconds) for waveform shading.
+          5. Emits the final packed result dict via finished(result).
+        Cancellation:
+          - Each major step calls _check_abort(); if abort flag set, raises "__ABORT__"
+            which triggers cancelled/failed logic upstream.
+        Errors:
+          - Any exception (other than the internal abort sentinel) triggers failed(str(e)).
         """
         try:
+            # 0% -> Initial notification
             self.progress.emit(0, "Starting analysis...")
             self._check_abort()
 
+            # 10% -> Reference media (downsample for display if huge, keep original AudioSegment)
             self.progress.emit(10, "Loading reference media...")
             ref_display, ref_rate, ref_full = self._load_audio(self.ref_media_path)
             self._check_abort()
 
+            # 30% -> New media
             self.progress.emit(30, "Loading new media...")
             new_display, new_rate, new_full = self._load_audio(self.new_media_path)
             self._check_abort()
 
+            # 50% -> Parse subtitles (pysrt returns list of SubRipItem)
             self.progress.emit(50, "Parsing subtitles...")
             subs = pysrt.open(self.srt_path, encoding='utf-8')
             self._check_abort()
 
+            # 65% -> Convert SubRipItems to lightweight dict rows (start, end, text)
             self.progress.emit(65, "Extracting subtitle rows...")
             rows = [{"start": s.start, "end": s.end, "text": s.text} for s in subs]
             self._check_abort()
 
+            # 80% -> Build numeric intervals in seconds for quick plotting / selection shading
             self.progress.emit(80, "Building intervals...")
             intervals = []
             for r in rows:
@@ -315,28 +330,31 @@ class AnalyzeWorker(QObject):
                 intervals.append((start_sec, end_sec))
             self._check_abort()
 
+            # 95% -> Bundle everything the GUI needs
             self.progress.emit(95, "Finalizing...")
             result = {
-                "ref_display": ref_display,
-                "ref_rate": ref_rate,
-                "ref_full": ref_full,
+                "ref_display": ref_display,   # numpy array (possibly decimated) for plotting
+                "ref_rate": ref_rate,         # effective plotting sample rate (adjusted if decimated)
+                "ref_full": ref_full,         # full-quality AudioSegment for playback
                 "new_display": new_display,
                 "new_rate": new_rate,
                 "new_full": new_full,
-                "rows": rows,
-                "intervals": intervals
+                "rows": rows,                 # list[dict] with pysrt time objects + text
+                "intervals": intervals        # list[(start_sec, end_sec)]
             }
+
+            # 100% -> Signal completion
             self.progress.emit(100, "Done")
             self.finished.emit(result)
 
         except RuntimeError as ex:
+            # If it's not our internal abort sentinel, surface as failure
             if str(ex) != "__ABORT__":
                 self.failed.emit(f"Aborted: {ex}")
         except Exception as e:
             self.failed.emit(str(e))
 
 
-# ============================= Worker for Background Analysis =============================
 class OffsetWorker(QObject):
     """
     Background worker to compute offsets for selected subtitle rows using
@@ -388,24 +406,48 @@ class OffsetWorker(QObject):
         return np.interp(x_new, x_old, samples).astype(np.float32)
 
     def run(self):
+        """
+        Computes per-row subtitle timing deltas using audio_offset_finder:
+          For each (row_index, start_sec, end_sec):
+            1. Validate duration (skip too short / empty).
+            2. Extract NEW media snippet (in new_sr).
+            3. Resample snippet to reference sample rate if needed (simple linear interp).
+            4. Call find_offset_between_buffers(ref_wave, snippet, ref_sr).
+               -> returns {'time_offset': t} meaning: snippet best aligns at time t (s) in reference.
+            5. Convert to displayed delta = start_sec - time_offset (current sign convention).
+            6. Emit result(row_index, delta|None, status).
+        Notes:
+          - Emits progress(row_index, "...") after each processed line (for UI message updates).
+          - Any per-line failure reports a status token instead of raising (keeps batch going).
+          - Overall fatal issues (e.g. library missing) emit failed(...) and stop.
+          - Abortable via abort() -> sets flag checked before heavy work per row.
+        """
         if find_offset_between_buffers is None:
             self.failed.emit("audio-offset-finder not installed (pip install audio-offset-finder)")
             return
         try:
             for idx, start_sec, end_sec in self.rows:
                 self._check_abort()
+
+                # 1. Duration sanity
                 dur = end_sec - start_sec
                 if dur <= 0 or dur < self.min_duration:
                     self.result.emit(idx, None, "too short")
                     continue
+
+                # 2. Slice snippet from NEW timeline (bounds-checked)
                 start_i = int(start_sec * self.new_sr)
                 end_i = min(int(end_sec * self.new_sr), self.new_wave.shape[0])
                 if end_i <= start_i:
                     self.result.emit(idx, None, "empty")
                     continue
                 snippet = self.new_wave[start_i:end_i]
+
+                # 3. Resample if source sample rate differs
                 if self.new_sr != self.ref_sr:
                     snippet = self._resample_linear(snippet, self.new_sr, self.ref_sr)
+
+                # 4. Run alignment
                 try:
                     res = find_offset_between_buffers(self.ref_wave, snippet, self.ref_sr)
                 except Exception as ex:
@@ -416,13 +458,17 @@ class OffsetWorker(QObject):
                     continue
 
                 time_offset = float(res["time_offset"])
-                # CHANGED: invert sign so what formerly showed e.g. -19.123 now shows +19.123
-                # Previous: delta = time_offset - start_sec
+
+                # 5. Derive signed delta (UI decided to display start_sec - time_offset)
                 delta = start_sec - time_offset
 
+                # 6. Emit success + progress
                 self.result.emit(idx, delta, "ok")
                 self.progress.emit(idx, f"row {idx+1} done")
+
+            # All rows processed
             self.finished.emit()
+
         except RuntimeError as ex:
             if str(ex) == "__ABORT__":
                 self.failed.emit("Aborted")
