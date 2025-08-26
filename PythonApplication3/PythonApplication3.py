@@ -1097,7 +1097,9 @@ class MainWindow(QWidget):
             self.synctable.setItem(i, 2, QTableWidgetItem(r["text"]))
             self.synctable.setItem(i, 3, QTableWidgetItem(""))
 
-            # Row striping
+            # Row striping (neutral background BEFORE any offset calculation):
+            # Light gray A: even rows -> QColor(245,245,245)
+            # Light gray B: odd  rows -> QColor(230,230,230)
             bg = QColor(245, 245, 245) if i % 2 == 0 else QColor(230, 230, 230)
             for c in range(3):
                 self.referencetable.item(i, c).setBackground(bg)
@@ -1216,10 +1218,19 @@ class MainWindow(QWidget):
             if cell is None:
                 self.synctable.setItem(row_index, 3, QTableWidgetItem(""))
                 cell = self.synctable.item(row_index, 3)
+
             if delta_val is None:
+                # No numeric offset found (status token instead):
+                #   "too short", "empty", "bad-result", etc. -> Beige (QColor(240,240,200))
+                #   Any status starting with "err"          -> Light red (QColor(255,210,210))
                 cell.setText(status)
-                cell.setBackground(QColor(240, 240, 200) if status not in ("err",) else QColor(255, 210, 210))
+                cell.setBackground(
+                    QColor(240, 240, 200) if not status.startswith("err") else QColor(255, 210, 210)
+                )
             else:
+                # Numeric offset present:
+                #   status == "ok"  -> Light green (QColor(210,245,210))
+                #   status != "ok"  -> Light red   (QColor(255,210,210)) (unexpected non-ok with delta)
                 sign = "+" if delta_val >= 0 else "-"
                 cell.setText(f"{sign}{abs(delta_val):.3f}")
                 cell.setBackground(QColor(210, 245, 210) if status == "ok" else QColor(255, 210, 210))
