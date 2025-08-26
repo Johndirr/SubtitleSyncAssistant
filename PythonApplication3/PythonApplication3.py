@@ -902,22 +902,43 @@ class MainWindow(QWidget):
         """
         Shift start/end times for selected or all rows by a user-specified offset (seconds).
         Negative values shift backward in time.
+        If selected_only=True and at least one selected row has a numeric offset (column 3),
+        the dialog is prefilled with the first numeric found offset (formatted to 3 decimals).
         """
         if self.synctable.rowCount() == 0:
             QMessageBox.information(self, "Shift Times", "No rows to shift.")
             return
 
         if selected_only:
-            target = [idx.row() for idx in self.synctable.selectionModel().selectedRows()]
+            selected_indexes = self.synctable.selectionModel().selectedRows()
+            target = [idx.row() for idx in selected_indexes]
             if not target:
                 QMessageBox.information(self, "Shift Times", "No rows selected.")
                 return
             prompt = "Shift selected line(s) by seconds (e.g. -1.250 or 2.5):"
+
+            # Prefill logic: look for first numeric offset in column 3 of selected rows
+            prefill = "0.000"
+            for r in target:
+                cell = self.synctable.item(r, 3)
+                if not cell:
+                    continue
+                raw = cell.text().strip()
+                # Accept strings like "+1.234", "-0.750", "1.000"
+                try:
+                    # Reject obvious non-numeric tokens (err, too short, empty, etc.)
+                    if raw and (raw[0].isdigit() or raw[0] in "+-"):
+                        val = float(raw)
+                        prefill = f"{val:+.3f}"
+                        break
+                except ValueError:
+                    continue
         else:
             target = list(range(self.synctable.rowCount()))
             prompt = "Shift ALL lines by seconds (e.g. -1.250 or 2.5):"
+            prefill = "0.000"
 
-        val_str, ok = QInputDialog.getText(self, "Shift Times", prompt, text="0.000")
+        val_str, ok = QInputDialog.getText(self, "Shift Times", prompt, text=prefill)
         if not ok or not val_str.strip():
             return
         try:
