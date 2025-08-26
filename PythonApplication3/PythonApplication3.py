@@ -1,11 +1,11 @@
 import sys
 import os
+from PyQt5.QtCore import Qt, QUrl, QByteArray, QBuffer, QThread, pyqtSignal, QObject, QTimer
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QSizePolicy, QFrame, QLabel,
     QTableWidget, QTableWidgetItem, QHeaderView, QFileDialog, QMessageBox, QSlider, QAbstractItemView,
-    QMenu, QAction, QInputDialog
+    QMenu, QAction, QInputDialog, QProgressBar, QDialog
 )
-from PyQt5.QtCore import Qt, QUrl, QByteArray, QBuffer
 from PyQt5.QtMultimedia import QAudioFormat, QAudioOutput   # <-- NEW (Qt based audio playback)
 from pydub import AudioSegment
 import numpy as np
@@ -209,18 +209,355 @@ class MatplotlibPlotWidget(QFrame):
             ax.axvspan(start, end, color=color, alpha=alpha, zorder=0)
         self.canvas.draw()
 
+# --- Worker infrastructure for non-blocking Analyze ---
+class AnalyzeWorker(QObject):
+    progress = pyqtSignal(int, str)          # value 0..100, message
+    finished = pyqtSignal(object)            # result dict
+    failed = pyqtSignal(str)                 # error message
+    cancelled = pyqtSignal()
+    def __init__(self, ref_media_path:str, new_media_path:str, srt_path:str):
+        super().__init__()
+        self.ref_media_path = ref_media_path
+        self.new_media_path = new_media_path
+        self.srt_path = srt_path
+        self._abort = False
+
+    def abort(self):
+        self._abort = True
+
+    def _check_abort(self):
+        if self._abort:
+            self.cancelled.emit()
+            raise RuntimeError("__ABORT__")
+
+    def _load_audio(self, path:str):
+        audio = AudioSegment.from_file(path)
+        samples = np.array(audio.get_array_of_samples()).astype(np.float32)
+        if audio.channels > 1:
+            samples = samples.reshape((-1, audio.channels)).T
+        samples = samples / (2 ** (8 * audio.sample_width - 1))
+        samplerate = audio.frame_rate
+        # Downsample for display if huge
+        if samples.size > 5_000_000:
+            display = samples[::10] if samples.ndim == 1 else samples[:, ::10]
+            display_rate = samplerate // 10
+        else:
+            display = samples
+            display_rate = samplerate
+        return display, samplerate, audio  # keep original full-quality segment
+
+    def run(self):
+        try:
+            # Step 0 sanity / start
+            self.progress.emit(0, "Starting analysis...")
+            self._check_abort()
+
+            # Step 1 load reference media
+            self.progress.emit(10, "Loading reference media...")
+            ref_display, ref_rate, ref_full = self._load_audio(self.ref_media_path)
+            self._check_abort()
+
+            # Step 2 load new media
+            self.progress.emit(30, "Loading new media...")
+            new_display, new_rate, new_full = self._load_audio(self.new_media_path)
+            self._check_abort()
+
+            # Step 3 load subtitles
+            self.progress.emit(50, "Parsing subtitles...")
+            subs = pysrt.open(self.srt_path, encoding='utf-8')
+            self._check_abort()
+
+            # Step 4 prepare table data
+            table_rows = []
+            for sub in subs:
+                table_rows.append({
+                    "start": sub.start,
+                    "end": sub.end,
+                    "text": sub.text
+                })
+            self._check_abort()
+
+            # Step 5 prepare intervals
+            self.progress.emit(70, "Preparing intervals...")
+            intervals = []
+            for r in table_rows:
+                st = r["start"]
+                et = r["end"]
+                start_sec = st.hours*3600 + st.minutes*60 + st.seconds + st.milliseconds/1000.0
+                end_sec   = et.hours*3600 + et.minutes*60 + et.seconds + et.milliseconds/1000.0
+                intervals.append((start_sec, end_sec))
+            self._check_abort()
+
+            # Step 6 final packaging
+            self.progress.emit(90, "Finalizing...")
+            result = {
+                "ref_display": ref_display,
+                "ref_rate": ref_rate,
+                "ref_full": ref_full,
+                "new_display": new_display,
+                "new_rate": new_rate,
+                "new_full": new_full,
+                "rows": table_rows,
+                "intervals": intervals
+            }
+            self.progress.emit(100, "Done")
+            self.finished.emit(result)
+        except RuntimeError as ex:
+            if str(ex) != "__ABORT__":
+                self.failed.emit(f"Aborted: {ex}")
+        except Exception as e:
+            self.failed.emit(str(e))
+
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Button-LineEdit Pairs Example")
         self.resize(1024, 600)
         self.init_ui()
-        # Audio playback state (Qt native) – keep separate segments for reference + new media
         self.ref_audio_segment: AudioSegment | None = None
         self.new_audio_segment: AudioSegment | None = None
         self.audio_output: QAudioOutput | None = None
         self.audio_buffer: QBuffer | None = None
         self.audio_data: QByteArray | None = None
+        self._analyze_thread: QThread | None = None
+        self._analyze_worker: AnalyzeWorker | None = None
+        self._busy_dialog: 'BusyDialog | None' = None
+
+    # ================== ADD / RESTORE MISSING CONTEXT MENU HELPERS ==================
+
+    def _collect_synctable_intervals(self) -> List[Tuple[float, float]]:
+        """Return list of (start_sec, end_sec) for every row currently in the sync table."""
+        intervals: List[Tuple[float, float]] = []
+        if not hasattr(self, "synctable"):
+            return intervals
+        for row in range(self.synctable.rowCount()):
+            s_item = self.synctable.item(row, 0)
+            e_item = self.synctable.item(row, 1)
+            if not s_item or not e_item:
+                continue
+            start_sec = self._parse_time_to_seconds(s_item.text())
+            end_sec = self._parse_time_to_seconds(e_item.text())
+            intervals.append((start_sec, end_sec))
+        return intervals
+
+    def synctable_delete_selected(self):
+        """Delete selected row(s) from sync table and refresh plot bands."""
+        if not hasattr(self, "synctable"):
+            return
+        sel = self.synctable.selectionModel().selectedRows() if self.synctable.selectionModel() else []
+        if not sel:
+            QMessageBox.information(self, "Delete", "No rows selected.")
+            return
+        # Remove from bottom to top
+        for model_index in sorted(sel, key=lambda x: x.row(), reverse=True):
+            self.synctable.removeRow(model_index.row())
+        # Update intervals & clear highlight
+        self.plot2.set_subtitle_intervals(self._collect_synctable_intervals())
+        self.plot2.set_selected_subtitle_indices([])
+
+    def shift_times(self, selected_only: bool):
+        """
+        Shift start/end times in sync table by a user-entered delta (seconds, may be negative).
+        If selected_only is True, only selected rows shift; else all rows.
+        """
+        if not hasattr(self, "synctable"):
+            return
+        table = self.synctable
+        if selected_only:
+            target_rows = [idx.row() for idx in (table.selectionModel().selectedRows()
+                                                 if table.selectionModel() else [])]
+            if not target_rows:
+                QMessageBox.information(self, "Shift Times", "No rows selected.")
+                return
+            caption = "Shift selected line(s) (seconds, e.g. -1.250 or 2.5):"
+        else:
+            if table.rowCount() == 0:
+                QMessageBox.information(self, "Shift Times", "No rows to shift.")
+                return
+            target_rows = list(range(table.rowCount()))
+            caption = "Shift ALL lines (seconds, e.g. -1.250 or 2.5):"
+
+        val_str, ok = QInputDialog.getText(self, "Shift Times", caption, text="0.000")
+        if not ok or not val_str.strip():
+            return
+        val_str = val_str.replace(",", ".")
+        try:
+            delta = float(val_str)
+        except ValueError:
+            QMessageBox.warning(self, "Invalid Input", "Could not parse the shift value.")
+            return
+
+        for row in target_rows:
+            s_item = table.item(row, 0)
+            e_item = table.item(row, 1)
+            if not s_item or not e_item:
+                continue
+            s_sec = self._parse_time_to_seconds(s_item.text())
+            e_sec = self._parse_time_to_seconds(e_item.text())
+            s_sec = max(0.0, s_sec + delta)
+            e_sec = max(s_sec, e_sec + delta)  # prevent negative / inverted
+            s_item.setText(self._format_seconds_to_time(s_sec))
+            e_item.setText(self._format_seconds_to_time(e_sec))
+
+        # Refresh interval shading
+        self.plot2.set_subtitle_intervals(self._collect_synctable_intervals())
+
+    def sanity_check_files(self) -> bool:
+        """Validate that required file paths are set and exist."""
+        missing = []
+        if not self.le1.text() or not os.path.exists(self.le1.text()): missing.append("Reference media file")
+        if not self.le2.text() or not os.path.exists(self.le2.text()): missing.append("New media file")
+        if not self.le3.text() or not os.path.exists(self.le3.text()): missing.append("Reference subtitle file")
+        if not self.le4.text(): missing.append("Subtitle save path")
+        if missing:
+            QMessageBox.warning(self, "Missing Files",
+                                "The following are missing or invalid:\n\n" + "\n".join(missing))
+            return False
+        return True
+
+    def on_analyze(self):
+        """Asynchronous analyze entry point (audio + subtitles) with busy dialog."""
+        if self._analyze_thread is not None:
+            QMessageBox.information(self, "Analyze", "Analysis already running.")
+            return
+        if not self.sanity_check_files():
+            return
+
+        ref_media = self.le1.text().strip()
+        new_media = self.le2.text().strip()
+        srt_path  = self.le3.text().strip()
+
+        # Busy dialog
+        self._busy_dialog = BusyDialog(self, title="Analyzing", message="Starting analysis …")
+        self._busy_dialog.show()
+
+        # Thread + worker
+        thread = QThread()
+        worker = AnalyzeWorker(ref_media, new_media, srt_path)
+        self._analyze_worker = worker
+        worker.moveToThread(thread)
+
+        # Signal handlers
+        worker.progress.connect(lambda _val, msg: self._busy_dialog and self._busy_dialog.set_message(msg))
+
+        def finished(result):
+            self._teardown_analysis()
+            try:
+                self._apply_analysis_result(result)
+            except Exception as e:
+                QMessageBox.critical(self, "Apply Result Error", f"{e}")
+
+        def failed(msg):
+            self._teardown_analysis()
+            QMessageBox.critical(self, "Analyze Failed", msg)
+
+        def cancelled():
+            self._teardown_analysis()
+            QMessageBox.information(self, "Analyze", "Analysis cancelled.")
+
+        def cleanup():
+            thread.quit()
+            thread.wait()
+            self._analyze_worker = None
+
+        worker.finished.connect(finished)
+        worker.failed.connect(failed)
+        worker.cancelled.connect(cancelled)
+        worker.finished.connect(cleanup)
+        worker.failed.connect(cleanup)
+        worker.cancelled.connect(cleanup)
+        thread.started.connect(worker.run)
+
+        self.btn5.setEnabled(False)
+        self._analyze_thread = thread
+        thread.start()
+
+    def _teardown_analysis(self):
+        self.btn5.setEnabled(True)
+        if self._busy_dialog:
+            try: self._busy_dialog.close()
+            except Exception: pass
+            self._busy_dialog = None
+        self._analyze_thread = None
+
+    def _apply_analysis_result(self, result: dict):
+        """Populate UI with analysis results."""
+        # Assign full quality segments
+        self.ref_audio_segment = result["ref_full"]
+        self.new_audio_segment = result["new_full"]
+
+        # Plot waveforms
+        self.plot1.plot_waveform(result["ref_display"], result["ref_rate"])
+        self.plot2.plot_waveform(result["new_display"], result["new_rate"])
+
+        fmt_time = lambda t: f"{t.hours:02}:{t.minutes:02}:{t.seconds:02},{t.milliseconds:03}"
+        rows = result["rows"]
+
+        # Reference table
+        self.referencetable.setRowCount(len(rows))
+        for i, r in enumerate(rows):
+            self.referencetable.setItem(i, 0, QTableWidgetItem(fmt_time(r["start"])))
+            self.referencetable.setItem(i, 1, QTableWidgetItem(fmt_time(r["end"])))
+            self.referencetable.setItem(i, 2, QTableWidgetItem(r["text"]))
+            bg = QColor(245,245,245) if i % 2 == 0 else QColor(230,230,230)
+            for c in range(3):
+                self.referencetable.item(i, c).setBackground(bg)
+
+        # Sync table
+        self.synctable.setRowCount(len(rows))
+        for i, r in enumerate(rows):
+            self.synctable.setItem(i, 0, QTableWidgetItem(fmt_time(r["start"])))
+            self.synctable.setItem(i, 1, QTableWidgetItem(fmt_time(r["end"])))
+            self.synctable.setItem(i, 2, QTableWidgetItem(r["text"]))
+            self.synctable.setItem(i, 3, QTableWidgetItem(""))
+            bg = QColor(245,245,245) if i % 2 == 0 else QColor(230,230,230)
+            for c in range(4):
+                self.synctable.item(i, c).setBackground(bg)
+
+        self.align_table_columns_left(self.referencetable)
+        self.align_table_columns_left(self.synctable)
+
+        # Intervals to plots
+        self.plot1.set_subtitle_intervals(result["intervals"])
+        self.plot2.set_subtitle_intervals(result["intervals"])
+
+    # Basic time helpers (if lost during refactors)
+    def _parse_time_to_seconds(self, text: str) -> float:
+        try:
+            h, m, rest = text.split(":")
+            s, ms = rest.split(",")
+            return int(h)*3600 + int(m)*60 + int(s) + int(ms)/1000.0
+        except Exception:
+            return 0.0
+
+    def _format_seconds_to_time(self, seconds: float) -> str:
+        if seconds < 0: seconds = 0
+        h = int(seconds // 3600)
+        m = int((seconds % 3600) // 60)
+        s = int(seconds % 60)
+        ms = int(round((seconds - int(seconds))*1000))
+        if ms == 1000:
+            ms = 0; s += 1
+            if s == 60:
+                s = 0; m += 1
+                if m == 60:
+                    m = 0; h += 1
+        return f"{h:02}:{m:02}:{s:02},{ms:03}"
+
+    def align_table_columns_left(self, table: QTableWidget):
+        """Left-align header text and cell contents for all columns of the given table."""
+        if table is None:
+            return
+        cols = table.columnCount()
+        rows = table.rowCount()
+        for col in range(cols):
+            header_item = table.horizontalHeaderItem(col)
+            if header_item:
+                header_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            for row in range(rows):
+                cell = table.item(row, col)
+                if cell:
+                    cell.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
     def init_ui(self):
         main_layout = QVBoxLayout(self)
@@ -346,6 +683,27 @@ class MainWindow(QWidget):
         self.referencetable.selectionModel().selectionChanged.connect(self.on_reference_table_selection)
         self.synctable.selectionModel().selectionChanged.connect(self.on_sync_table_selection)
 
+    def on_reference_table_selection(self):
+        """
+        Highlight selected subtitle bands in plot1 (reference) when the reference table selection changes.
+        Connected to selectionModel().selectionChanged.
+        """
+        if not hasattr(self, "referencetable"):
+            return
+        selected_rows = self.referencetable.selectionModel().selectedRows()
+        indices = [idx.row() for idx in selected_rows]
+        self.plot1.set_selected_subtitle_indices(indices)
+
+    def on_sync_table_selection(self):
+        """
+        Highlight selected subtitle bands in plot2 (new media) when the sync table selection changes.
+        """
+        if not hasattr(self, "synctable"):
+            return
+        selected_rows = self.synctable.selectionModel().selectedRows()
+        indices = [idx.row() for idx in selected_rows]
+        self.plot2.set_selected_subtitle_indices(indices)
+
     # --- Context menu handlers ---
     def show_synctable_context_menu(self, pos):
         menu = QMenu(self)
@@ -377,7 +735,7 @@ class MainWindow(QWidget):
         act_play = QAction("Play", self)
         act_jump = QAction("Jump to", self)    # NEW
         menu.addAction(act_play)
-        menu.addAction(act_jump)               # NEW
+        menu.addAction(act_jump)
         act_play.triggered.connect(self.referencetable_play_selected)
         act_jump.triggered.connect(self.referencetable_jump_to_selected)  # NEW
         menu.exec_(self.referencetable.viewport().mapToGlobal(pos))
@@ -423,402 +781,215 @@ class MainWindow(QWidget):
         self._play_audio_segment(self.ref_audio_segment, start_sec, end_sec)
 
     def synctable_play_selected(self):
-        """Play the NEW media audio (new_audio_segment) for the first selected row of the sync table."""
+        """Play NEW media audio for first selected sync table row."""
         selected = self.synctable.selectionModel().selectedRows()
         if not selected:
             QMessageBox.information(self, "Play", "No row selected.")
             return
         row = selected[0].row()
 
+        # Lazy load new audio if needed
         if self.new_audio_segment is None:
-            # Try lazy load
             path_new = self.le2.text().strip()
             if not path_new or not os.path.exists(path_new):
-                QMessageBox.warning(self, "Play", "New media file not available (load it first).")
+                QMessageBox.warning(self, "Play", "New media file not available.")
                 return
             try:
                 self.new_audio_segment = AudioSegment.from_file(path_new)
             except Exception as e:
-                QMessageBox.critical(self, "Play", f"Failed to load new media file:\n{e}")
+                QMessageBox.critical(self, "Play", f"Failed to load new media:\n{e}")
                 return
 
         start_item = self.synctable.item(row, 0)
         end_item = self.synctable.item(row, 1)
         if not start_item or not end_item:
-            QMessageBox.warning(self, "Play", "Missing start or end time in the selected row.")
+            QMessageBox.warning(self, "Play", "Missing start/end time.")
             return
-
         try:
             start_sec = self._parse_time_to_seconds(start_item.text())
             end_sec = self._parse_time_to_seconds(end_item.text())
         except Exception:
             QMessageBox.warning(self, "Play", "Could not parse times.")
             return
-
         if end_sec <= start_sec:
-            QMessageBox.warning(self, "Play", "End time must be greater than start time.")
+            QMessageBox.warning(self, "Play", "End must be greater than start.")
             return
-
         self._play_audio_segment(self.new_audio_segment, start_sec, end_sec)
 
-    def _on_media_status_changed(self, status):
-        # When loaded, seek and play
-        if status == QMediaPlayer.LoadedMedia:
-            if hasattr(self, "_pending_start_ms"):
-                # self.player.setPosition(self._pending_start_ms)
-                # self.player.play()
-                delattr(self, "_pending_start_ms")
-    def _on_player_position_changed(self, position_ms):
-        if self._play_segment_end_ms is not None and position_ms >= self._play_segment_end_ms:
-            # Stop at end boundary
-            # self.player.pause()
-            self._play_segment_end_ms = None
-
-    # --- Added missing methods used by the context menu ---
-
-    def synctable_delete_selected(self):
-        """Delete selected row(s) from the sync table and update plot2 bands."""
-        selected = self.synctable.selectionModel().selectedRows()
-        if not selected:
-            return
-        rows = sorted((s.row() for s in selected), reverse=True)
-        for r in rows:
-            self.synctable.removeRow(r)
-        self.plot2.set_subtitle_intervals(self._collect_synctable_intervals())
-        # Clear highlight if nothing selected now
-        if not self.synctable.selectionModel().selectedRows():
-            self.plot2.set_selected_subtitle_indices([])
-
-    def shift_times(self, selected_only: bool):
-        """Shift start/end times for selected lines or all lines by a delta (seconds, may be negative)."""
-        if selected_only:
-            target_rows = [idx.row() for idx in self.synctable.selectionModel().selectedRows()]
-            if not target_rows:
-                QMessageBox.information(self, "Shift Times", "No row selected.")
-                return
-            caption = "Shift selected line(s) (seconds, e.g. -1.250 or 1,25):"
-        else:
-            if self.synctable.rowCount() == 0:
-                QMessageBox.information(self, "Shift Times", "No lines to shift.")
-                return
-            target_rows = list(range(self.synctable.rowCount()))
-            caption = "Shift all lines (seconds, e.g. -1.250 or 2,5):"
-
-        val_str, ok = QInputDialog.getText(self, "Shift Times", caption, text="0.000")
-        if not ok or not val_str.strip():
-            return
-        val_str = val_str.replace(",", ".")
-        try:
-            delta = float(val_str)
-        except ValueError:
-            QMessageBox.warning(self, "Invalid Input", "Could not parse the shift value.")
+    def _play_audio_segment(self, segment: AudioSegment, start_sec: float, end_sec: float):
+        """
+        Play a portion of an AudioSegment (start_sec <= t < end_sec) via QAudioOutput.
+        Replaces the previously missing helper required by context menu Play actions.
+        """
+        if segment is None:
+            QMessageBox.warning(self, "Playback", "Audio not loaded.")
             return
 
-        for row in target_rows:
-            start_item = self.synctable.item(row, 0)
-            end_item = self.synctable.item(row, 1)
-            if not start_item or not end_item:
-                continue
-            start_sec = self._parse_time_to_seconds(start_item.text())
-            end_sec = self._parse_time_to_seconds(end_item.text())
-            start_sec += delta
-            end_sec += delta
-            if end_sec < start_sec:
-                end_sec = start_sec
-            start_item.setText(self._format_seconds_to_time(start_sec))
-            end_item.setText(self._format_seconds_to_time(end_sec))
-
-        self.plot2.set_subtitle_intervals(self._collect_synctable_intervals())
-
-    def _parse_time_to_seconds(self, text: str) -> float:
-        try:
-            h, m, rest = text.split(":")
-            s, ms = rest.split(",")
-            return int(h)*3600 + int(m)*60 + int(s) + int(ms)/1000.0
-        except Exception:
-            return 0.0
-
-    def _format_seconds_to_time(self, seconds: float) -> str:
-        if seconds < 0:
-            seconds = 0.0
-        h = int(seconds // 3600)
-        m = int((seconds % 3600) // 60)
-        s = int(seconds % 60)
-        ms = int(round((seconds - int(seconds)) * 1000))
-        if ms == 1000:
-            ms = 0
-            s += 1
-            if s == 60:
-                s = 0
-                m += 1
-                if m == 60:
-                    m = 0
-                    h += 1
-        return f"{h:02}:{m:02}:{s:02},{ms:03}"
-
-    def _collect_synctable_intervals(self) -> List[Tuple[float, float]]:
-        intervals: List[Tuple[float, float]] = []
-        for row in range(self.synctable.rowCount()):
-            s_item = self.synctable.item(row, 0)
-            e_item = self.synctable.item(row, 1)
-            if not s_item or not e_item:
-                continue
-            start_sec = self._parse_time_to_seconds(s_item.text())
-            end_sec = self._parse_time_to_seconds(e_item.text())
-            intervals.append((start_sec, end_sec))
-        return intervals
-
-    # --- Existing helper / UI methods ---
-    def select_media_file_btn1(self):
-        filters = "Media files (*.avi *.mkv *.mpg *.mpeg *.mp4 *.mov *.wmv *.flv *.webm);;All files (*.*)"
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select Media File", "", filters)
-        if file_path:
-            self.le1.setText(file_path)
-
-    def select_media_file_btn2(self):
-        filters = "Media files (*.avi *.mkv *.mpg *.mpeg *.mp4 *.mov *.wmv *.flv *.webm);;All files (*.*)"
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select Media File", "", filters)
-        if file_path:
-            self.le2.setText(file_path)
-
-    def select_subtitle_file_btn3(self):
-        filters = "Subtitle files (*.srt);;All files (*.*)"
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select Subtitle File", "", filters)
-        if file_path:
-            self.le3.setText(file_path)
-            # Auto-fill save subtitle path with "_resync" appended before extension
-            base, ext = os.path.splitext(file_path)
-            self.le4.setText(f"{base}_resync{ext}")
-
-    def save_subtitle_file_btn4(self):
-        filters = "Subtitle files (*.srt);;All files (*.*)"
-        file_path, _ = QFileDialog.getSaveFileName(self, "Save Subtitle As", "", filters)
-        if file_path:
-            self.le4.setText(file_path)
-
-    def sanity_check_files(self):
-        missing_files = []
-        if not self.le1.text() or not os.path.exists(self.le1.text()):
-            missing_files.append("Reference media file")
-        if not self.le2.text() or not os.path.exists(self.le2.text()):
-            missing_files.append("New media file")
-        if not self.le3.text() or not os.path.exists(self.le3.text()):
-            missing_files.append("Reference subtitle file")
-        if not self.le4.text():
-            missing_files.append("Subtitle save path")
-        if missing_files:
-            QMessageBox.warning(self, "File(s) not found",
-                                "The following file(s) do not exist or are not selected:\n\n" + "\n".join(missing_files))
-            return False
-        return True
-
-    def load_audio_samples(self, filepath):
-        """Load an audio file and return normalized samples (amplitude [-1, 1] as numpy array."""
-        audio = AudioSegment.from_file(filepath)
-        samples = np.array(audio.get_array_of_samples()).astype(np.float32)
-        if audio.channels > 1:
-            samples = samples.reshape((-1, audio.channels)).T
-        # Normalize samples to range [-1, 1]
-        samples = samples / (2 ** (8 * audio.sample_width - 1))
-        # Get the sample rate (Hz)
-        samplerate = audio.frame_rate
-
-        # Downsample if necessary for display (when more than 5 million samples))
-        if samples.size > 5000000:
-            # Downsample to every 10th sample
-            display_samples = samples[::10] if samples.ndim == 1 else samples[:, ::10]
-            display_samplerate = samplerate // 10
-            return display_samples, audio, display_samplerate
-        else:
-            return samples, audio, samplerate
-
-    def on_analyze(self):
-        if not self.sanity_check_files():
-            return
-        Refsamples, RefAudio, RefRate = self.load_audio_samples(self.le1.text())
-        Newsamples, NewAudio, NewRate = self.load_audio_samples(self.le2.text())
-
-        # Reload full-quality (non-display, non-downsampled) audio segments for playback
-        try:
-            self.ref_audio_segment = AudioSegment.from_file(self.le1.text())
-        except Exception as e:
-            self.ref_audio_segment = None
-            QMessageBox.warning(self, "Audio", f"Could not load reference audio for playback:\n{e}")
-        try:
-            self.new_audio_segment = AudioSegment.from_file(self.le2.text())
-        except Exception as e:
-            self.new_audio_segment = None
-            QMessageBox.warning(self, "Audio", f"Could not load new audio for playback:\n{e}")
-
-        self.plot1.plot_waveform(Refsamples, RefRate)
-        self.plot2.plot_waveform(Newsamples, NewRate)
-
-        srt_path = self.le3.text()
-        try:
-            subs = pysrt.open(srt_path, encoding='utf-8')
-        except Exception as e:
-            QMessageBox.critical(self, "Subtitle Error", f"Failed to load subtitle file:\n{e}")
-            return
-
-        # Helper to format time as hh:mm:ss,ms
-        def fmt_time(t):
-            return f"{t.hours:02}:{t.minutes:02}:{t.seconds:02},{t.milliseconds:03}"
-
-        # Fill referencetable
-        self.referencetable.setRowCount(len(subs))
-        for i, sub in enumerate(subs):
-            self.referencetable.setItem(i, 0, QTableWidgetItem(fmt_time(sub.start)))
-            self.referencetable.setItem(i, 1, QTableWidgetItem(fmt_time(sub.end)))
-            self.referencetable.setItem(i, 2, QTableWidgetItem(sub.text))
-            bg = QColor(245, 245, 245) if i % 2 == 0 else QColor(230, 230, 230)
-            for c in range(3):
-                self.referencetable.item(i, c).setBackground(bg)
-
-        self.synctable.setRowCount(len(subs))
-        for i, sub in enumerate(subs):
-            self.synctable.setItem(i, 0, QTableWidgetItem(fmt_time(sub.start)))
-            self.synctable.setItem(i, 1, QTableWidgetItem(fmt_time(sub.end)))
-            self.synctable.setItem(i, 2, QTableWidgetItem(sub.text))
-            self.synctable.setItem(i, 3, QTableWidgetItem(""))
-            bg = QColor(245, 245, 245) if i % 2 == 0 else QColor(230, 230, 230)
-            for c in range(4):
-                self.synctable.item(i, c).setBackground(bg)
-
-        self.align_table_columns_left(self.referencetable)
-        self.align_table_columns_left(self.synctable)
-
-        intervals = []
-        for sub in subs:
-            start_sec = sub.start.hours * 3600 + sub.start.minutes * 60 + sub.start.seconds + sub.start.milliseconds / 1000.0
-            end_sec = sub.end.hours * 3600 + sub.end.minutes * 60 + sub.end.seconds + sub.end.milliseconds / 1000.0
-            intervals.append((start_sec, end_sec))
-        self.plot1.set_subtitle_intervals(intervals)
-        self.plot2.set_subtitle_intervals(intervals)
-
-    def on_reference_table_selection(self):
-        selected = self.referencetable.selectionModel().selectedRows()
-        indices = [idx.row() for idx in selected]
-        self.plot1.set_selected_subtitle_indices(indices)
-
-    def on_sync_table_selection(self):
-        selected = self.synctable.selectionModel().selectedRows()
-        indices = [idx.row() for idx in selected]
-        self.plot2.set_selected_subtitle_indices(indices)
-
-    def align_table_columns_left(self, table):
-        for col in range(table.columnCount()):
-            header_item = table.horizontalHeaderItem(col)
-            if header_item:
-                header_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            for row in range(table.rowCount()):
-                it = table.item(row, col)
-                if it:
-                    it.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-
-    # --- Playback helpers (Qt native) ---
-    def _play_audio_segment(self, segment_source: AudioSegment, start_sec: float, end_sec: float):
-        """Generic segment playback from a provided AudioSegment object."""
-        if segment_source is None:
-            QMessageBox.warning(self, "Playback", "Audio segment not loaded.")
-            return
-
-        total_dur = len(segment_source) / 1000.0
+        total = len(segment) / 1000.0
         if start_sec < 0:
             start_sec = 0
-        if end_sec > total_dur:
-            end_sec = total_dur
+        if end_sec > total:
+            end_sec = total
         if end_sec <= start_sec:
             QMessageBox.warning(self, "Playback", "Invalid time range.")
             return
 
         start_ms = int(start_sec * 1000)
         end_ms = int(end_sec * 1000)
-        segment = segment_source[start_ms:end_ms]
+        part = segment[start_ms:end_ms]
 
-        if segment.sample_width != 2:
-            segment = segment.set_sample_width(2)
+        # Force 16‑bit signed PCM for Qt
+        if part.sample_width != 2:
+            part = part.set_sample_width(2)
 
-        channels = segment.channels
-        sample_rate = segment.frame_rate
-        sample_width = segment.sample_width  # bytes
+        channels = part.channels
+        rate = part.frame_rate
+        sample_width_bytes = part.sample_width  # 2 after adjustment
 
         fmt = QAudioFormat()
-        fmt.setSampleRate(sample_rate)
+        fmt.setSampleRate(rate)
         fmt.setChannelCount(channels)
-        fmt.setSampleSize(sample_width * 8)
+        fmt.setSampleSize(sample_width_bytes * 8)
         fmt.setCodec("audio/pcm")
         fmt.setByteOrder(QAudioFormat.LittleEndian)
         fmt.setSampleType(QAudioFormat.SignedInt)
 
-        # Stop previous playback if any
-        if self.audio_output is not None:
+        # Stop any previous playback
+        if self.audio_output:
             self.audio_output.stop()
             self.audio_output.deleteLater()
             self.audio_output = None
-        if self.audio_buffer is not None:
+        if self.audio_buffer:
             self.audio_buffer.close()
             self.audio_buffer.deleteLater()
             self.audio_buffer = None
 
-        self.audio_data = QByteArray(segment.raw_data)
+        # Prepare buffer
+        self.audio_data = QByteArray(part.raw_data)
         self.audio_buffer = QBuffer()
         self.audio_buffer.setData(self.audio_data)
         self.audio_buffer.open(QBuffer.ReadOnly)
 
         self.audio_output = QAudioOutput(fmt, self)
-        self.audio_output.stateChanged.connect(self._on_audio_state_changed)
         self.audio_output.start(self.audio_buffer)
 
-    def _on_audio_state_changed(self, state):
-        """Handle QAudioOutput state transitions; cleanup on stop/finish."""
-        from PyQt5.QtMultimedia import QAudio
-        if state in (QAudio.StoppedState, QAudio.IdleState):
-            # If an error occurred we could log it; keep silent here
-            if self.audio_output and self.audio_output.error() != QAudio.NoError:
-                pass
-            # Optional cleanup (uncomment if you want to free memory immediately)
-            # if self.audio_buffer:
-            #     self.audio_buffer.close()
-            # if self.audio_output:
-            #     self.audio_output.deleteLater()
-            # self.audio_output = None
-            # self.audio_buffer = None
-            # self.audio_data = None
-
-    # --- NEW: Jump handlers ---
+    # --- Jump handlers (ADD these inside MainWindow, e.g. after synctable_play_selected) ---
     def referencetable_jump_to_selected(self):
-        """Scroll first plot to (earliest) selected reference subtitle start time."""
+        """
+        Jump first plot (reference) to earliest start time of the selected reference rows
+        and highlight those subtitle bands.
+        """
+        if not hasattr(self, "referencetable") or self.referencetable.selectionModel() is None:
+            return
         selected = self.referencetable.selectionModel().selectedRows()
         if not selected:
             return
-        # Use earliest start among selections
         starts = []
-        for s in selected:
-            item = self.referencetable.item(s.row(), 0)
-            if item:
-                starts.append(self._parse_time_to_seconds(item.text()))
+        sel_indices = []
+        for idx in selected:
+            row = idx.row()
+            start_item = self.referencetable.item(row, 0)
+            if start_item:
+                starts.append(self._parse_time_to_seconds(start_item.text()))
+                sel_indices.append(row)
         if not starts:
             return
         target = min(starts)
-        self.plot1.jump_to_time(target, center=True)
-        # Keep highlighting consistent
-        self.plot1.set_selected_subtitle_indices([r.row() for r in selected])
+        if hasattr(self, "plot1") and hasattr(self.plot1, "jump_to_time"):
+            self.plot1.jump_to_time(target, center=True)
+            self.plot1.set_selected_subtitle_indices(sel_indices)
 
     def synctable_jump_to_selected(self):
-        """Scroll second plot to (earliest) selected sync (new media) subtitle start time."""
+        """
+        Jump second plot (new media) to earliest start time of the selected sync rows
+        and highlight those subtitle bands.
+        """
+        if not hasattr(self, "synctable") or self.synctable.selectionModel() is None:
+            return
         selected = self.synctable.selectionModel().selectedRows()
         if not selected:
             return
         starts = []
-        for s in selected:
-            item = self.synctable.item(s.row(), 0)
-            if item:
-                starts.append(self._parse_time_to_seconds(item.text()))
+        sel_indices = []
+        for idx in selected:
+            row = idx.row()
+            start_item = self.synctable.item(row, 0)
+            if start_item:
+                starts.append(self._parse_time_to_seconds(start_item.text()))
+                sel_indices.append(row)
         if not starts:
             return
         target = min(starts)
-        self.plot2.jump_to_time(target, center=True)
-        self.plot2.set_selected_subtitle_indices([r.row() for r in selected])
+        if hasattr(self, "plot2") and hasattr(self.plot2, "jump_to_time"):
+            self.plot2.jump_to_time(target, center=True)
+            self.plot2.set_selected_subtitle_indices(sel_indices)
+        
+
+    def select_media_file_btn1(self):
+        """Pick reference media file and put its path into le1."""
+        filters = "Media files (*.avi *.mkv *.mpg *.mpeg *.mp4 *.mov *.wmv *.flv *.webm);;All files (*.*)"
+        path, _ = QFileDialog.getOpenFileName(self, "Select Reference Media", "", filters)
+        if path:
+            self.le1.setText(path)
+
+    def select_media_file_btn2(self):
+        """Pick new media file and put its path into le2."""
+        filters = "Media files (*.avi *.mkv *.mpg *.mpeg *.mp4 *.mov *.wmv *.flv *.webm);;All files (*.*)"
+        path, _ = QFileDialog.getOpenFileName(self, "Select New Media", "", filters)
+        if path:
+            self.le2.setText(path)
+
+    def select_subtitle_file_btn3(self):
+        """Pick reference subtitle (.srt) and fill le3 + auto-generate save path in le4."""
+        filters = "Subtitle files (*.srt);;All files (*.*)"
+        path, _ = QFileDialog.getOpenFileName(self, "Select Reference Subtitle", "", filters)
+        if path:
+            self.le3.setText(path)
+            base, ext = os.path.splitext(path)
+            self.le4.setText(f"{base}_resync{ext}")
+
+    def save_subtitle_file_btn4(self):
+        """Pick destination for saving adjusted subtitle file."""
+        filters = "Subtitle files (*.srt);;All files (*.*)"
+        path, _ = QFileDialog.getSaveFileName(self, "Save Subtitle As", "", filters)
+        if path:
+            # Ensure .srt extension if user omitted (optional)
+            if not os.path.splitext(path)[1]:
+                path += ".srt"
+            self.le4.setText(path)
+
+# --- Simple non-blocking busy dialog (no cancel, custom animation) ---
+class BusyDialog(QDialog):
+    def __init__(self, parent=None, title="Working", message="Please wait..."):
+        super().__init__(parent)
+        # Remove the "?" (context help) button from the title bar
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+
+        self.setWindowTitle(title)
+        self.setModal(True)  # Blocks input only; event loop still runs
+        self.setMinimumWidth(320)
+        lay = QVBoxLayout(self)
+        self.label = QLabel(message, self)
+        self.label.setWordWrap(True)
+        lay.addWidget(self.label)
+        self.bar = QProgressBar(self)
+        self.bar.setRange(0, 100)
+        self.bar.setValue(0)
+        lay.addWidget(self.bar)
+
+        self._pulse_value = 0
+        self._pulse_timer = QTimer(self)
+        self._pulse_timer.timeout.connect(self._pulse)
+        self._pulse_timer.start(60)
+
+    def _pulse(self):
+        self._pulse_value = (self._pulse_value + 3) % 101
+        self.bar.setValue(self._pulse_value)
+
+    def set_message(self, text: str):
+        self.label.setText(text)
+        # Force repaint without starving events
+        QApplication.processEvents()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
