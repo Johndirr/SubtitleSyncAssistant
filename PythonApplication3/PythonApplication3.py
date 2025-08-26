@@ -19,6 +19,11 @@ from matplotlib.figure import Figure
 import pysrt
 from pydub import AudioSegment
 
+try:
+    from audio_offset_finder.audio_offset_finder import find_offset_between_buffers
+except ImportError:
+    find_offset_between_buffers = None
+
 
 # ============================= Matplotlib Plot Widget =============================
 
@@ -331,6 +336,101 @@ class AnalyzeWorker(QObject):
             self.failed.emit(str(e))
 
 
+# ============================= Worker for Background Analysis =============================
+class OffsetWorker(QObject):
+    """
+    Background worker to compute offsets for selected subtitle rows using
+    audio_offset_finder.find_offset_between_buffers(buffer1, buffer2, fs, ...)
+
+    buffer1: full reference mono waveform
+    buffer2: snippet (new media) mono waveform for each row (resampled to reference rate if needed)
+    Returned dict['time_offset'] is where buffer2 aligns relative to buffer1 (seconds).
+
+    We output delta = time_offset - subtitle_start_time  (difference between detected location in reference
+    and the nominal start time from the subtitle). Adjust sign logic if you prefer storing raw time_offset.
+    """
+    progress = pyqtSignal(int, str)              # row_index, message
+    result = pyqtSignal(int, object, str)        # row_index, delta(float)|None, status ("ok"/reason)
+    finished = pyqtSignal()
+    failed = pyqtSignal(str)
+
+    def __init__(self,
+                 ref_wave: np.ndarray,
+                 ref_sr: int,
+                 new_wave: np.ndarray,
+                 new_sr: int,
+                 rows: List[Tuple[int, float, float]],   # (row_index, start_sec, end_sec)
+                 min_duration: float = 1.0):
+        super().__init__()
+        self.ref_wave = ref_wave.astype(np.float32)
+        self.ref_sr = ref_sr
+        self.new_wave = new_wave.astype(np.float32)
+        self.new_sr = new_sr
+        self.rows = rows
+        self.min_duration = min_duration
+        self._abort = False
+
+    def abort(self):
+        self._abort = True
+
+    def _check_abort(self):
+        if self._abort:
+            raise RuntimeError("__ABORT__")
+
+    @staticmethod
+    def _resample_linear(samples: np.ndarray, src_sr: int, dst_sr: int) -> np.ndarray:
+        if src_sr == dst_sr or samples.size == 0:
+            return samples
+        ratio = dst_sr / src_sr
+        new_len = max(1, int(round(samples.shape[0] * ratio)))
+        x_old = np.linspace(0.0, 1.0, samples.shape[0], endpoint=False)
+        x_new = np.linspace(0.0, 1.0, new_len, endpoint=False)
+        return np.interp(x_new, x_old, samples).astype(np.float32)
+
+    def run(self):
+        if find_offset_between_buffers is None:
+            self.failed.emit("audio-offset-finder not installed (pip install audio-offset-finder)")
+            return
+        try:
+            for idx, start_sec, end_sec in self.rows:
+                self._check_abort()
+                dur = end_sec - start_sec
+                if dur <= 0 or dur < self.min_duration:
+                    self.result.emit(idx, None, "too short")
+                    continue
+                start_i = int(start_sec * self.new_sr)
+                end_i = min(int(end_sec * self.new_sr), self.new_wave.shape[0])
+                if end_i <= start_i:
+                    self.result.emit(idx, None, "empty")
+                    continue
+                snippet = self.new_wave[start_i:end_i]
+                if self.new_sr != self.ref_sr:
+                    snippet = self._resample_linear(snippet, self.new_sr, self.ref_sr)
+                try:
+                    res = find_offset_between_buffers(self.ref_wave, snippet, self.ref_sr)
+                except Exception as ex:
+                    self.result.emit(idx, None, f"err:{ex}")
+                    continue
+                if not isinstance(res, dict) or "time_offset" not in res:
+                    self.result.emit(idx, None, "bad-result")
+                    continue
+
+                time_offset = float(res["time_offset"])
+                # CHANGED: invert sign so what formerly showed e.g. -19.123 now shows +19.123
+                # Previous: delta = time_offset - start_sec
+                delta = start_sec - time_offset
+
+                self.result.emit(idx, delta, "ok")
+                self.progress.emit(idx, f"row {idx+1} done")
+            self.finished.emit()
+        except RuntimeError as ex:
+            if str(ex) == "__ABORT__":
+                self.failed.emit("Aborted")
+            else:
+                self.failed.emit(str(ex))
+        except Exception as e:
+            self.failed.emit(str(e))
+
 # ============================= Busy Dialog (Indeterminate Progress) =============================
 
 class BusyDialog(QDialog):
@@ -402,6 +502,14 @@ class MainWindow(QWidget):
         self._analyze_thread: Optional[QThread] = None
         self._analyze_worker: Optional[AnalyzeWorker] = None
         self._busy_dialog: Optional[BusyDialog] = None
+
+        # Offset finder state
+        self._offset_thread: Optional[QThread] = None
+        self._offset_worker: Optional[OffsetWorker] = None
+        self._ref_mono_cache: Optional[np.ndarray] = None
+        self._ref_sr_cache: Optional[int] = None
+        self._new_mono_cache: Optional[np.ndarray] = None
+        self._new_sr_cache: Optional[int] = None
 
     # ---------- Utility: Table alignment ----------
 
@@ -575,6 +683,7 @@ class MainWindow(QWidget):
         act_delete = QAction("Delete line(s)", self)
         act_shift_sel = QAction("Shift times for selected line(s)", self)
         act_shift_all = QAction("Shift all times", self)
+        act_find_offsets = QAction("Find Offset(s) (BBC-offset-finder)", self)  # NEW
 
         menu.addAction(act_play)
         menu.addAction(act_jump)
@@ -583,12 +692,15 @@ class MainWindow(QWidget):
         menu.addSeparator()
         menu.addAction(act_shift_sel)
         menu.addAction(act_shift_all)
+        menu.addSeparator()
+        menu.addAction(act_find_offsets)  # NEW last
 
         act_play.triggered.connect(self.synctable_play_selected)
         act_jump.triggered.connect(self.synctable_jump_to_selected)
         act_delete.triggered.connect(self.synctable_delete_selected)
         act_shift_sel.triggered.connect(lambda: self.shift_times(selected_only=True))
         act_shift_all.triggered.connect(lambda: self.shift_times(selected_only=False))
+        act_find_offsets.triggered.connect(self.find_offsets_for_selected)  # NEW hook
 
         menu.exec_(self.synctable.viewport().mapToGlobal(pos))
 
@@ -1007,6 +1119,153 @@ class MainWindow(QWidget):
         # Interval shading
         self.plot1.set_subtitle_intervals(result["intervals"])
         self.plot2.set_subtitle_intervals(result["intervals"])
+
+    def _ensure_audio_caches_for_offsets(self) -> bool:
+        """
+        Ensure mono float32 numpy arrays + sample rates for reference and new media
+        are ready in self._ref_mono_cache / self._new_mono_cache.
+        Returns True on success, False on failure (after showing a message box).
+        """
+        if find_offset_between_buffers is None:
+            QMessageBox.warning(self, "Offset Finder",
+                                "audio-offset-finder not installed.\nRun:\n  pip install audio-offset-finder")
+            return False
+
+        # Load full audio segments if not already loaded
+        if self.ref_audio_segment is None:
+            ref_path = self.le1.text().strip()
+            if not ref_path or not os.path.exists(ref_path):
+                QMessageBox.warning(self, "Offset Finder", "Reference media file not available.")
+                return False
+            try:
+                self.ref_audio_segment = AudioSegment.from_file(ref_path)
+            except Exception as e:
+                QMessageBox.critical(self, "Offset Finder", f"Could not load reference media:\n{e}")
+                return False
+
+        if self.new_audio_segment is None:
+            new_path = self.le2.text().strip()
+            if not new_path or not os.path.exists(new_path):
+                QMessageBox.warning(self, "Offset Finder", "New media file not available.")
+                return False
+            try:
+                self.new_audio_segment = AudioSegment.from_file(new_path)
+            except Exception as e:
+                QMessageBox.critical(self, "Offset Finder", f"Could not load new media:\n{e}")
+                return False
+
+        def to_mono_array(seg: AudioSegment) -> Tuple[np.ndarray, int]:
+            arr = np.array(seg.get_array_of_samples()).astype(np.float32)
+            if seg.channels > 1:
+                arr = arr.reshape((-1, seg.channels)).mean(axis=1)
+            arr /= (2 ** (8 * seg.sample_width - 1))
+            return arr, seg.frame_rate
+
+        if self._ref_mono_cache is None or self._ref_sr_cache is None:
+            self._ref_mono_cache, self._ref_sr_cache = to_mono_array(self.ref_audio_segment)
+        if self._new_mono_cache is None or self._new_sr_cache is None:
+            self._new_mono_cache, self._new_sr_cache = to_mono_array(self.new_audio_segment)
+
+        return True
+    
+    def find_offsets_for_selected(self):
+        """Compute offsets for currently selected sync table rows using BBC audio-offset-finder."""
+        if self.synctable.rowCount() == 0:
+            QMessageBox.information(self, "Offset Finder", "No rows available.")
+            return
+
+        selection = self.synctable.selectionModel().selectedRows()
+        if not selection:
+            QMessageBox.information(self, "Offset Finder", "No rows selected.")
+            return
+
+        if not self._ensure_audio_caches_for_offsets():
+            return
+
+        if self._offset_thread is not None:
+            QMessageBox.information(self, "Offset Finder", "Offset computation already running.")
+            return
+
+        # Collect (row_index, start_sec, end_sec)
+        rows: List[Tuple[int, float, float]] = []
+        for idx in selection:
+            r = idx.row()
+            s_item = self.synctable.item(r, 0)
+            e_item = self.synctable.item(r, 1)
+            if not s_item or not e_item:
+                continue
+            start_sec = self._parse_time_to_seconds(s_item.text())
+            end_sec = self._parse_time_to_seconds(e_item.text())
+            rows.append((r, start_sec, end_sec))
+
+        if not rows:
+            QMessageBox.information(self, "Offset Finder", "Selected rows have no valid times.")
+            return
+
+        # Progress dialog (reuse BusyDialog pattern)
+        self._busy_offset = BusyDialog(self, title="Finding Offsets", message="Searching …")
+        self._busy_offset.show()
+
+        thread = QThread()
+        worker = OffsetWorker(
+            ref_wave=self._ref_mono_cache,
+            ref_sr=self._ref_sr_cache,
+            new_wave=self._new_mono_cache,
+            new_sr=self._new_sr_cache,
+            rows=rows,
+            min_duration=1.0
+        )
+        self._offset_thread = thread
+        self._offset_worker = worker
+        worker.moveToThread(thread)
+
+        def on_result(row_index: int, delta_val, status: str):
+            # Column 3 = "Found offset"
+            cell = self.synctable.item(row_index, 3)
+            if cell is None:
+                self.synctable.setItem(row_index, 3, QTableWidgetItem(""))
+                cell = self.synctable.item(row_index, 3)
+            if delta_val is None:
+                cell.setText(status)
+                cell.setBackground(QColor(240, 240, 200) if status not in ("err",) else QColor(255, 210, 210))
+            else:
+                sign = "+" if delta_val >= 0 else "-"
+                cell.setText(f"{sign}{abs(delta_val):.3f}")
+                cell.setBackground(QColor(210, 245, 210) if status == "ok" else QColor(255, 210, 210))
+
+        def on_progress(row_index: int, msg: str):
+            if self._busy_offset:
+                self._busy_offset.set_message(f"Processing {msg}")
+
+        def on_finished():
+            self._finish_offset_worker()
+
+        def on_failed(err: str):
+            QMessageBox.critical(self, "Offset Finder", err)
+            self._finish_offset_worker()
+
+        def cleanup():
+            thread.quit()
+            thread.wait()
+            self._offset_thread = None
+            self._offset_worker = None
+
+        worker.result.connect(on_result)
+        worker.progress.connect(on_progress)
+        worker.finished.connect(on_finished)
+        worker.failed.connect(on_failed)
+        worker.finished.connect(cleanup)
+        worker.failed.connect(cleanup)
+        thread.started.connect(worker.run)
+        thread.start()
+
+    def _finish_offset_worker(self):
+        if hasattr(self, "_busy_offset") and self._busy_offset:
+            try:
+                self._busy_offset.close()
+            except Exception:
+                pass
+            self._busy_offset = None
 
     # ---------- Time helpers (parsing / formatting) ----------
 
