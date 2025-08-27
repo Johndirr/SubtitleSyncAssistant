@@ -1029,7 +1029,7 @@ class MainWindow(QWidget):
         def on_progress(row_index: int, msg: str):
             if self._busy_offset:
                 # msg already contains "seq/total (table row idx)"
-                self._busy_offset.set_message(f"Processing {msg}")
+                self._busy_offset.set_message(f"Processed {msg}")
 
         def on_finished():
             self._finish_offset_worker()
@@ -1134,7 +1134,7 @@ class MainWindow(QWidget):
 
         def on_progress(row_index: int, msg: str):
             if self._busy_offset:
-                self._busy_offset.set_message(f"Processing {msg}")
+                self._busy_offset.set_message(f"Processed {msg}")
 
         def on_finished():
             self._finish_offset_worker()
