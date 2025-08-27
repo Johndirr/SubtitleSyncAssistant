@@ -202,19 +202,64 @@ class AnalyzeWorker(QObject):
             raise RuntimeError("__ABORT__")
 
     def _load_audio(self, path: str):
+        """
+        Load an audio file with pydub and prepare a lightweight numpy representation
+        for waveform plotting (without altering the full-quality AudioSegment).
+
+        Returns
+        -------
+        display : np.ndarray
+            Float32 array (mono or multi‑channel) possibly decimated for speed.
+            Shape:
+              - 1D (n,) if the original file is mono.
+              - 2D (channels, n) if multi‑channel.
+        display_sr : int
+            Effective sample rate matching the decimated data (NOT the original
+            frame rate when we take every Nth sample). This is critical so
+            duration = len(display_mono) / display_sr is still correct.
+        audio : AudioSegment
+            The untouched full‑quality pydub segment (used later for playback
+            / precise export / offset correlation caches).
+        """
+        # Decode file using pydub (ffmpeg backend) into an AudioSegment.
         audio = AudioSegment.from_file(path)
-        samples = np.array(audio.get_array_of_samples()).astype(np.float32)
+
+        # Convert raw PCM samples to a NumPy float32 array.
+        # get_array_of_samples() returns interleaved samples for multi‑channel audio.
+        samples = np.array(audio.get_array_of_samples(), dtype=np.float32)
+
+        # If multi‑channel, reshape to (channels, n_samples).
+        # Pydub provides samples interleaved: L R L R ... (frame major).
+        # We reshape to (n_frames, channels) then transpose so axis 0 = channels.
         if audio.channels > 1:
-            samples = samples.reshape((-1, audio.channels)).T
-        samples /= (2 ** (8 * audio.sample_width - 1))
+            samples = samples.reshape((-1, audio.channels)).T  # (channels, n)
+
+        # Normalize integer PCM to [-1.0, 1.0] range.
+        # audio.sample_width is in bytes (e.g. 2 for 16‑bit).
+        # Signed PCM max magnitude = 2^(bits-1). Example: 16‑bit -> 32768.
+        # Using floating range keeps plotting consistent and prevents overflow in later math.
+        full_scale = float(2 ** (8 * audio.sample_width - 1))
+        samples /= full_scale
+
+        # Record original sample rate (frame_rate in pydub).
         original_sr = audio.frame_rate
+
+        # OPTIONAL DOWNSAMPLING (purely for plotting performance).
+        # If the total sample count is huge (>5M values), decimate by a fixed stride
+        # to reduce memory + draw time. We also adjust display_sr accordingly so
+        # timeline math (seconds = index / display_sr) stays correct.
         if samples.size > 5_000_000:
-            factor = 10
-            display = samples[::factor] if samples.ndim == 1 else samples[:, ::factor]
+            factor = 10  # simple stride decimation (no anti‑aliasing – acceptable for visualization)
+            if samples.ndim == 1:
+                display = samples[::factor]
+            else:
+                display = samples[:, ::factor]
             display_sr = max(1, original_sr // factor)
         else:
             display = samples
             display_sr = original_sr
+
+        # Return lightweight array + its effective sample rate + full segment.
         return display, display_sr, audio
 
     def run(self):
