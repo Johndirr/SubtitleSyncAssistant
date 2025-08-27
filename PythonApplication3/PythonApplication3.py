@@ -342,8 +342,8 @@ class OffsetWorker(QObject):
                 time_offset_global = float(res["time_offset"]) + self.ref_offset_sec
                 delta = start_sec - time_offset_global
                 self.result.emit(idx, delta, "ok")
-                # Emit both sequential progress and actual table row index
-                self.progress.emit(idx, f"{seq}/{total} (table row {idx})")
+                # Emit sequential progress + 1-based UI row number (idx+1)
+                self.progress.emit(idx, f"{seq}/{total} (row {idx+1})")
             self.finished.emit()
         except RuntimeError as ex:
             if str(ex) == "__ABORT__":
