@@ -375,6 +375,7 @@ class OffsetWorker(QObject):
     result = pyqtSignal(int, object, str)
     finished = pyqtSignal()
     failed = pyqtSignal(str)
+    cancelled = pyqtSignal()
 
     def __init__(self,
                  ref_wave: np.ndarray,
@@ -447,7 +448,7 @@ class OffsetWorker(QObject):
             self.finished.emit()
         except RuntimeError as ex:
             if str(ex) == "__ABORT__":
-                self.failed.emit("Aborted")
+                self.cancelled.emit()
             else:
                 self.failed.emit(str(ex))
         except Exception as e:
@@ -457,12 +458,17 @@ class OffsetWorker(QObject):
 # ============================= Busy Dialog =============================
 
 class BusyDialog(QDialog):
-    def __init__(self, parent=None, title="Working", message="Please wait..."):
+    cancel_requested = pyqtSignal()
+
+    def __init__(self, parent=None, title="Working", message="Please wait...", cancellable: bool = False):
         super().__init__(parent)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
         self.setWindowTitle(title)
         self.setModal(True)
-        self.setMinimumWidth(320)
+        self.setMinimumWidth(360)
+        self._cancellable = cancellable
+        self._force_close = False
+        self._cancel_sent = False
         layout = QVBoxLayout(self)
         self.label = QLabel(message, self)
         self.label.setWordWrap(True)
@@ -471,17 +477,40 @@ class BusyDialog(QDialog):
         self.bar.setRange(0, 0)
         self.bar.setTextVisible(False)
         layout.addWidget(self.bar)
+        if cancellable:
+            btns = QDialogButtonBox(QDialogButtonBox.Cancel)
+            btns.rejected.connect(self._on_cancel)
+            layout.addWidget(btns)
+
+    def _on_cancel(self):
+        if not self._cancel_sent:
+            self._cancel_sent = True
+            self.cancel_requested.emit()
+        self.set_message("Cancelling …")
 
     def set_message(self, text: str):
         self.label.setText(text)
 
+    def finish(self):
+        """Allow dialog to really close now (worker done)."""
+        self._force_close = True
+        self.close()
+
+    def closeEvent(self, event):
+        # Allow normal close if force_close set or not cancellable
+        if self._force_close or not self._cancellable:
+            return super().closeEvent(event)
+        # Treat as user cancellation; keep dialog until worker ends
+        if not self._cancel_sent:
+            self._cancel_sent = True
+            self.cancel_requested.emit()
+        self.set_message("Cancelling …")
+        event.ignore()
+
+
 # ============================= Range Select Dialog =============================
 
 class RangeSelectDialog(QDialog):
-    """
-    Modal dialog to collect start/end times (HH:MM:SS) for a reference range.
-    Returns whole‑second values (no milliseconds).
-    """
     def __init__(self, parent, default_start_sec: float, default_end_sec: float):
         super().__init__(parent)
         self.setWindowTitle("Reference Range")
@@ -955,7 +984,8 @@ class MainWindow(QWidget):
             return
         if not self.sanity_check_files():
             return
-        self._busy_dialog = BusyDialog(self, title="Analyzing", message="Starting analysis …")
+        self._busy_dialog = BusyDialog(self, title="Analyzing", message="Starting analysis …", cancellable=True)
+        self._busy_dialog.cancel_requested.connect(lambda: self._analyze_worker and self._analyze_worker.abort())
         self._busy_dialog.show()
 
         thread = QThread()
@@ -1002,7 +1032,7 @@ class MainWindow(QWidget):
         self.btn5.setEnabled(True)
         if self._busy_dialog:
             try:
-                self._busy_dialog.close()
+                self._busy_dialog.finish()
             except Exception:
                 pass
             self._busy_dialog = None
@@ -1075,6 +1105,12 @@ class MainWindow(QWidget):
             self._new_mono_cache, self._new_sr_cache = to_mono(self.new_audio_segment)
         return True
 
+    def cancel_offset_worker(self):
+        if self._offset_worker:
+            self._offset_worker.abort()
+            if self._busy_offset:
+                self._busy_offset.set_message("Cancelling …")
+
     def find_offsets_for_selected(self):
         if self.synctable.rowCount() == 0:
             QMessageBox.information(self, "Offset Finder", "No rows available.")
@@ -1102,7 +1138,8 @@ class MainWindow(QWidget):
             QMessageBox.information(self, "Offset Finder", "Selected rows have no valid times.")
             return
 
-        self._busy_offset = BusyDialog(self, title="Finding Offsets", message="Searching …")
+        self._busy_offset = BusyDialog(self, title="Finding Offsets", message="Searching …", cancellable=True)
+        self._busy_offset.cancel_requested.connect(self.cancel_offset_worker)
         self._busy_offset.show()
 
         thread = QThread()
@@ -1113,7 +1150,9 @@ class MainWindow(QWidget):
         self._offset_worker = worker
         worker.moveToThread(thread)
 
-        def on_result(row_index: int, delta_val, status: str):
+        def on_result(row_index: int, delta_val, status: str, _worker=worker):
+            if _worker is not self._offset_worker:
+                return
             cell = self.synctable.item(row_index, 3)
             if cell is None:
                 self.synctable.setItem(row_index, 3, QTableWidgetItem(""))
@@ -1126,30 +1165,44 @@ class MainWindow(QWidget):
                 cell.setText(f"{sign}{abs(delta_val):.3f}")
                 cell.setBackground(QColor(210, 245, 210) if status == "ok" else QColor(255, 210, 210))
 
-        def on_progress(row_index: int, msg: str):
+        def on_progress(row_index: int, msg: str, _worker=worker):
+            if _worker is not self._offset_worker:
+                return
             if self._busy_offset:
-                # msg already contains "seq/total (table row idx)"
                 self._busy_offset.set_message(f"Processed {msg}")
 
-        def on_finished():
+        def on_finished(_worker=worker):
+            if _worker is not self._offset_worker:
+                return
             self._finish_offset_worker()
 
-        def on_failed(err: str):
-            QMessageBox.critical(self, "Offset Finder", err)
+        def on_failed(err: str, _worker=worker):
+            if _worker is not self._offset_worker:
+                return
+            if err != "Aborted":
+                QMessageBox.critical(self, "Offset Finder", err)
             self._finish_offset_worker()
 
-        def cleanup():
-            thread.quit()
-            thread.wait()
-            self._offset_thread = None
-            self._offset_worker = None
+        def on_cancelled(_worker=worker):
+            if _worker is not self._offset_worker:
+                return
+            self._finish_offset_worker()
+
+        def cleanup(_worker=worker):
+            if _worker is self._offset_worker:
+                thread.quit()
+                thread.wait()
+                self._offset_thread = None
+                self._offset_worker = None
 
         worker.result.connect(on_result)
         worker.progress.connect(on_progress)
         worker.finished.connect(on_finished)
         worker.failed.connect(on_failed)
+        worker.cancelled.connect(on_cancelled)
         worker.finished.connect(cleanup)
         worker.failed.connect(cleanup)
+        worker.cancelled.connect(cleanup)
         thread.started.connect(worker.run)
         thread.start()
 
@@ -1208,7 +1261,9 @@ class MainWindow(QWidget):
         ref_slice = self._ref_mono_cache[start_i:end_i]
 
         self._busy_offset = BusyDialog(self, title="Finding Offsets (Range)",
-                                       message=f"Searching {ref_start:.3f}s–{ref_end:.3f}s …")
+                                       message=f"Searching {ref_start:.3f}s–{ref_end:.3f}s …",
+                                       cancellable=True)
+        self._busy_offset.cancel_requested.connect(self.cancel_offset_worker)
         self._busy_offset.show()
 
         thread = QThread()
@@ -1219,7 +1274,9 @@ class MainWindow(QWidget):
         self._offset_worker = worker
         worker.moveToThread(thread)
 
-        def on_result(row_index: int, delta_val, status: str):
+        def on_result(row_index: int, delta_val, status: str, _worker=worker):
+            if _worker is not self._offset_worker:
+                return
             cell = self.synctable.item(row_index, 3)
             if cell is None:
                 self.synctable.setItem(row_index, 3, QTableWidgetItem(""))
@@ -1232,36 +1289,51 @@ class MainWindow(QWidget):
                 cell.setText(f"{sign}{abs(delta_val):.3f}")
                 cell.setBackground(QColor(210, 245, 210) if status == "ok" else QColor(255, 210, 210))
 
-        def on_progress(row_index: int, msg: str):
+        def on_progress(row_index: int, msg: str, _worker=worker):
+            if _worker is not self._offset_worker:
+                return
             if self._busy_offset:
                 self._busy_offset.set_message(f"Processed {msg}")
 
-        def on_finished():
+        def on_finished(_worker=worker):
+            if _worker is not self._offset_worker:
+                return
             self._finish_offset_worker()
 
-        def on_failed(err: str):
-            QMessageBox.critical(self, "Offset Finder", err)
+        def on_failed(err: str, _worker=worker):
+            if _worker is not self._offset_worker:
+                return
+            if err != "Aborted":
+                QMessageBox.critical(self, "Offset Finder", err)
             self._finish_offset_worker()
 
-        def cleanup():
-            thread.quit()
-            thread.wait()
-            self._offset_thread = None
-            self._offset_worker = None
+        def on_cancelled(_worker=worker):
+            if _worker is not self._offset_worker:
+                return
+            self._finish_offset_worker()
+
+        def cleanup(_worker=worker):
+            if _worker is self._offset_worker:
+                thread.quit()
+                thread.wait()
+                self._offset_thread = None
+                self._offset_worker = None
 
         worker.result.connect(on_result)
         worker.progress.connect(on_progress)
         worker.finished.connect(on_finished)
         worker.failed.connect(on_failed)
+        worker.cancelled.connect(on_cancelled)
         worker.finished.connect(cleanup)
         worker.failed.connect(cleanup)
+        worker.cancelled.connect(cleanup)
         thread.started.connect(worker.run)
         thread.start()
 
     def _finish_offset_worker(self):
         if self._busy_offset:
             try:
-                self._busy_offset.close()
+                self._busy_offset.finish()
             except Exception:
                 pass
             self._busy_offset = None
