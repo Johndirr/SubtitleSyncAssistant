@@ -738,6 +738,9 @@ class MainWindow(QWidget):
         self._new_mono_cache: Optional[np.ndarray] = None
         self._new_sr_cache: Optional[int] = None
         self._busy_offset: Optional[BusyDialog] = None
+        # Colors for visual feedback when rows have been time‑shifted
+        self._shift_sel_color = QColor(255, 225, 160)  # shift selected rows
+        self._shift_all_color = QColor(255, 240, 200)  # shift all rows
 
     # ---------- UI ----------
     def _build_ui(self):
@@ -1090,7 +1093,19 @@ class MainWindow(QWidget):
             s_item.setText(self._format_seconds_to_time(s))
             e_item.setText(self._format_seconds_to_time(e))
 
+        # Visual feedback: highlight shifted rows
+        self._mark_rows_shifted(target, all_mode=not selected_only)
+
         self.plot2.set_subtitle_intervals(self._collect_synctable_intervals())
+
+    def _mark_rows_shifted(self, rows: List[int], all_mode: bool):
+        """Apply background color to indicate rows were shifted."""
+        color = self._shift_all_color if all_mode else self._shift_sel_color
+        for r in rows:
+            for c in range(self.synctable.columnCount()):
+                item = self.synctable.item(r, c)
+                if item:
+                    item.setBackground(color)
 
     # ---------- File Selection ----------
     def select_media_file_btn1(self):
