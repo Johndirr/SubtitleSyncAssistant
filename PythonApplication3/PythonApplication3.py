@@ -6,7 +6,7 @@ from PyQt5.QtCore import Qt, QByteArray, QBuffer, QThread, pyqtSignal, QObject
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QSizePolicy, QFrame, QLabel,
     QTableWidget, QTableWidgetItem, QHeaderView, QFileDialog, QMessageBox, QSlider, QAbstractItemView,
-    QMenu, QAction, QInputDialog, QProgressBar, QDialog, QSpinBox, QDialogButtonBox
+    QMenu, QAction, QInputDialog, QProgressBar, QDialog, QSpinBox, QDialogButtonBox, QDoubleSpinBox
 )
 from PyQt5.QtMultimedia import QAudioFormat, QAudioOutput
 from PyQt5.QtGui import QColor
@@ -47,9 +47,48 @@ class MatplotlibPlotWidget(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
+        # Top bar: Amp controls (left) + centered title
+        top_bar = QHBoxLayout()
+        top_bar.setContentsMargins(4, 0, 4, 0)
+        top_bar.setSpacing(6)
+
+        # Left controls container (fixed width reference)
+        left_controls = QWidget(self)
+        lc_layout = QHBoxLayout(left_controls)
+        lc_layout.setContentsMargins(0, 0, 0, 0)
+        lc_layout.setSpacing(4)
+        amp_lbl = QLabel("Amp:", self)
+        amp_lbl.setToolTip("Visible +/- amplitude (vertical zoom of normalized waveform).")
+        self.amp_spin = QDoubleSpinBox(self)
+        self.amp_spin.setRange(0.05, 2.00)
+        self.amp_spin.setSingleStep(0.05)
+        self.amp_spin.setDecimals(2)
+        self.amp_spin.setValue(1.05)
+        self.amp_spin.setToolTip("Adjust vertical zoom (does not alter data).")
+        self.amp_spin.valueChanged.connect(self._on_amp_changed)
+        lc_layout.addWidget(amp_lbl)
+        lc_layout.addWidget(self.amp_spin)
+        top_bar.addWidget(left_controls)
+
+        # Stretch before title
+        top_bar.addStretch()
+
+        # Title (centered between symmetric side blocks)
         self.label = QLabel(title, self)
         self.label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.label)
+        self.label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        top_bar.addWidget(self.label)
+
+        # Stretch after title
+        top_bar.addStretch()
+
+        # Right phantom spacer with same width as left_controls to balance centering.
+        right_phantom = QWidget(self)
+        phantom_w = left_controls.sizeHint().width()
+        right_phantom.setFixedWidth(phantom_w)
+        top_bar.addWidget(right_phantom)
+
+        layout.addLayout(top_bar)
 
         self.figure = Figure(figsize=(5, 2))
         self.canvas = FigureCanvas(self.figure)
@@ -66,6 +105,7 @@ class MatplotlibPlotWidget(QFrame):
         self._dragging = False
         self._drag_start_x_pixel = None
         self._drag_start_slider = None
+        self._amp_limit = 1.05  # current half-range of y-axis
 
         self.canvas.mpl_connect("button_press_event", self._on_mouse_press)
         self.canvas.mpl_connect("button_release_event", self._on_mouse_release)
@@ -132,7 +172,7 @@ class MatplotlibPlotWidget(QFrame):
         ax = self.figure.add_subplot(111)
         ax.plot(t[idx_min:idx_max], self.samples_mono[idx_min:idx_max], linewidth=1.0)
         ax.set_xlim([_xmin, _xmax])
-        ax.set_ylim([-1.05, 1.05])
+        ax.set_ylim([-self._amp_limit, self._amp_limit])
         ax.set_ylabel("Amplitude", fontsize=8, labelpad=0)
         ax.xaxis.set_major_formatter(mticker.FuncFormatter(self._format_hhmmss))
         ax.tick_params(axis="both", which="major", labelsize=7, pad=1)
@@ -176,6 +216,21 @@ class MatplotlibPlotWidget(QFrame):
                 self.slider.setValue(new_slider)
                 self._drag_start_x_pixel = event.x
                 self._drag_start_slider = new_slider
+
+    def _on_amp_changed(self, val: float):
+        """User changed vertical zoom."""
+        self._amp_limit = max(0.01, float(val))
+        self._plot_window(float(self.slider.value()))
+
+    def set_amplitude_limit(self, max_abs: float):
+        """Programmatic vertical zoom setter."""
+        if max_abs <= 0:
+            return
+        blocked = self.amp_spin.blockSignals(True)
+        self.amp_spin.setValue(max_abs)
+        self.amp_spin.blockSignals(blocked)
+        self._amp_limit = max_abs
+        self._plot_window(float(self.slider.value()))
 
 
 # ============================= Analyze Worker =============================
