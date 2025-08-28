@@ -6,7 +6,7 @@ from PyQt5.QtCore import Qt, QByteArray, QBuffer, QThread, pyqtSignal, QObject
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QSizePolicy, QFrame, QLabel,
     QTableWidget, QTableWidgetItem, QHeaderView, QFileDialog, QMessageBox, QSlider, QAbstractItemView,
-    QMenu, QAction, QInputDialog, QProgressBar, QDialog, QSpinBox, QDialogButtonBox, QDoubleSpinBox
+    QMenu, QAction, QInputDialog, QProgressBar, QDialog, QSpinBox, QDialogButtonBox, QDoubleSpinBox, QTextEdit
 )
 from PyQt5.QtMultimedia import QAudioFormat, QAudioOutput
 from PyQt5.QtGui import QColor
@@ -583,6 +583,106 @@ class RangeSelectDialog(QDialog):
         return dlg._start_seconds, dlg._end_seconds, ok
 
 
+# ============================= Edit Subtitle Dialog =============================
+
+class EditSubtitleDialog(QDialog):
+    def __init__(self, parent, start_text: str, end_text: str, subtitle_text: str):
+        super().__init__(parent)
+        self.setWindowTitle("Edit Subtitle Line")
+        self.setModal(True)
+        self.setMinimumWidth(520)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        # Start time
+        row_start = QHBoxLayout()
+        row_start.addWidget(QLabel("Start (HH:MM:SS,mmm):"))
+        self.le_start = QLineEdit()
+        self.le_start.setText(start_text)
+        row_start.addWidget(self.le_start)
+        layout.addLayout(row_start)
+
+        # End time
+        row_end = QHBoxLayout()
+        row_end.addWidget(QLabel("End (HH:MM:SS,mmm):"))
+        self.le_end = QLineEdit()
+        self.le_end.setText(end_text)
+        row_end.addWidget(self.le_end)
+        layout.addLayout(row_end)
+
+        # Text
+        layout.addWidget(QLabel("Text:"))
+        self.te_text = QTextEdit()
+        self.te_text.setPlainText(subtitle_text)
+        layout.addWidget(self.te_text)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.result_start = None
+        self.result_end = None
+        self.result_text = None
+
+    def _normalize_time(self, t: str) -> Optional[str]:
+        t = t.strip()
+        if not t:
+            return None
+        # Accept variants like HH:MM:SS.mmm or HH:MM:SS,mmm
+        if '.' in t and ',' not in t:
+            parts = t.rsplit('.', 1)
+            if len(parts[-1]) in (1, 2, 3) and parts[-1].isdigit():
+                t = parts[0] + ',' + parts[1].ljust(3, '0')
+        # Ensure milliseconds
+        if ',' not in t:
+            if t.count(':') == 2:
+                t += ",000"
+        # Pad milliseconds to 3
+        if ',' in t:
+            a, b = t.split(',', 1)
+            if not b.isdigit():
+                return None
+            b = b[:3].ljust(3, '0')
+            t = a + ',' + b
+        return t
+
+    def _parse_to_seconds(self, t: str) -> Optional[float]:
+        try:
+            h, m, rest = t.split(':')
+            s, ms = rest.split(',')
+            return int(h)*3600 + int(m)*60 + int(s) + int(ms)/1000.0
+        except Exception:
+            return None
+
+    def _on_accept(self):
+        start_raw = self._normalize_time(self.le_start.text())
+        end_raw = self._normalize_time(self.le_end.text())
+        if not start_raw or not end_raw:
+            QMessageBox.warning(self, "Invalid", "Invalid start or end time format.")
+            return
+        s = self._parse_to_seconds(start_raw)
+        e = self._parse_to_seconds(end_raw)
+        if s is None or e is None:
+            QMessageBox.warning(self, "Invalid", "Could not parse start/end times.")
+            return
+        if e <= s:
+            QMessageBox.warning(self, "Invalid", "End must be greater than Start.")
+            return
+        self.result_start = start_raw
+        self.result_end = end_raw
+        self.result_text = self.te_text.toPlainText()
+        self.accept()
+
+    @staticmethod
+    def edit(parent, start_text: str, end_text: str, subtitle_text: str) -> Tuple[Optional[str], Optional[str], Optional[str], bool]:
+        dlg = EditSubtitleDialog(parent, start_text, end_text, subtitle_text)
+        ok = dlg.exec_() == QDialog.Accepted
+        return dlg.result_start, dlg.result_end, dlg.result_text, ok
+
+
 # ============================= Main Window =============================
 
 class MainWindow(QWidget):
@@ -715,6 +815,7 @@ class MainWindow(QWidget):
         menu = QMenu(self)
         act_play = QAction("Play", self)
         act_jump = QAction("Jump to", self)
+        act_edit = QAction("Edit...", self)
         act_delete = QAction("Delete line(s)", self)
         act_shift_sel = QAction("Shift times for selected line(s)", self)
         act_shift_all = QAction("Shift all times", self)
@@ -723,6 +824,7 @@ class MainWindow(QWidget):
 
         menu.addAction(act_play)
         menu.addAction(act_jump)
+        menu.addAction(act_edit)
         menu.addSeparator()
         menu.addAction(act_delete)
         menu.addSeparator()
@@ -734,6 +836,7 @@ class MainWindow(QWidget):
 
         act_play.triggered.connect(self.synctable_play_selected)
         act_jump.triggered.connect(self.synctable_jump_to_selected)
+        act_edit.triggered.connect(self.edit_selected_subtitle)
         act_delete.triggered.connect(self.synctable_delete_selected)
         act_shift_sel.triggered.connect(lambda: self.shift_times(selected_only=True))
         act_shift_all.triggered.connect(lambda: self.shift_times(selected_only=False))
@@ -751,6 +854,33 @@ class MainWindow(QWidget):
         act_play.triggered.connect(self.referencetable_play_selected)
         act_jump.triggered.connect(self.referencetable_jump_to_selected)
         menu.exec_(self.referencetable.viewport().mapToGlobal(pos))
+
+    def edit_selected_subtitle(self):
+        """Open edit dialog for the first selected sync table row."""
+        sel = self.synctable.selectionModel().selectedRows()
+        if not sel:
+            return
+        row = sel[0].row()
+        s_item = self.synctable.item(row, 0)
+        e_item = self.synctable.item(row, 1)
+        t_item = self.synctable.item(row, 2)
+        if not (s_item and e_item and t_item):
+            return
+
+        start_orig = s_item.text()
+        end_orig = e_item.text()
+        text_orig = t_item.text()
+
+        new_start, new_end, new_text, ok = EditSubtitleDialog.edit(self, start_orig, end_orig, text_orig)
+        if not ok:
+            return
+
+        s_item.setText(new_start)
+        e_item.setText(new_end)
+        t_item.setText(new_text)
+
+        # Refresh plot intervals
+        self.plot2.set_subtitle_intervals(self._collect_synctable_intervals())
 
     # ---------- Playback ----------
     def referencetable_play_selected(self):
@@ -1057,6 +1187,7 @@ class MainWindow(QWidget):
             self.synctable.setItem(i, 1, QTableWidgetItem(fmt(r["end"])))
             self.synctable.setItem(i, 2, QTableWidgetItem(r["text"]))
             self.synctable.setItem(i, 3, QTableWidgetItem(""))
+
 
             bg = QColor(245, 245, 245) if i % 2 == 0 else QColor(230, 230, 230)
             for c in range(3):
