@@ -115,10 +115,12 @@ class MatplotlibPlotWidget(QFrame):
         self.samples = samples
         self.sr = sr
         self.samples_mono = samples.mean(axis=0) if samples.ndim > 1 else samples
-        self.total_duration = len(self.samples_mono) / sr if sr > 0 else 0.0
+        total_len = len(self.samples_mono)
+        # Use (N-1)/sr as true last-sample time so time vector aligns exactly with i/sr
+        self.total_duration = (total_len - 1) / sr if sr > 0 and total_len > 0 else 0.0
 
         if self.total_duration > self.window_duration:
-            self.slider.setMaximum(int(self.total_duration - self.window_duration))
+            self.slider.setMaximum(int(max(0, self.total_duration - self.window_duration)))
             self.slider.setEnabled(True)
         else:
             self.slider.setMaximum(0)
@@ -162,11 +164,13 @@ class MatplotlibPlotWidget(QFrame):
             return
         sr = self.sr
         total_len = len(self.samples_mono)
+        if total_len == 0:
+            return
         _xmin = start_sec
         _xmax = min(start_sec + self.window_duration, self.total_duration)
         idx_min = int(_xmin * sr)
-        idx_max = min(int(_xmax * sr), total_len)
-        t = np.linspace(0, self.total_duration, num=total_len)
+        idx_max = min(int(_xmax * sr) + 1, total_len)
+        t = np.arange(total_len, dtype=np.float64) / sr
 
         self.figure.clear()
         ax = self.figure.add_subplot(111)
@@ -174,7 +178,23 @@ class MatplotlibPlotWidget(QFrame):
         ax.set_xlim([_xmin, _xmax])
         ax.set_ylim([-self._amp_limit, self._amp_limit])
         ax.set_ylabel("Amplitude", fontsize=8, labelpad=0)
+
+        # ---- NEW: deterministic integer / coarse tick positioning ----
+        span = _xmax - _xmin
+        if span <= 30:
+            step = 1
+        elif span <= 120:
+            step = 5
+        elif span <= 600:
+            step = 10
+        elif span <= 1800:
+            step = 30
+        else:
+            step = 60
+        ax.xaxis.set_major_locator(mticker.MultipleLocator(base=step))
         ax.xaxis.set_major_formatter(mticker.FuncFormatter(self._format_hhmmss))
+        # --------------------------------------------------------------
+
         ax.tick_params(axis="both", which="major", labelsize=7, pad=1)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
@@ -182,6 +202,7 @@ class MatplotlibPlotWidget(QFrame):
 
         if self.subtitle_intervals:
             for i, (start, end) in enumerate(self.subtitle_intervals):
+                # Only draw spans intersecting current window
                 if end >= _xmin and start <= _xmax:
                     color = "#ff9900" if i in self.selected_subtitle_indices else "orange"
                     alpha = 0.38 if i in self.selected_subtitle_indices else 0.18
