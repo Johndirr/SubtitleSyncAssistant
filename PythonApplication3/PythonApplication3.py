@@ -159,6 +159,14 @@ class MatplotlibPlotWidget(QFrame):
         s = sec % 60
         return f"{h:02}:{m:02}:{s:02}"
 
+    def _format_odd_second(self, x, _pos=None):
+        # Show label only at exact odd whole seconds
+        # (tolerate small float error with a round)
+        whole = int(round(x))
+        if abs(x - whole) < 1e-6 and whole % 2 == 1:
+            return self._format_hhmmss(whole)
+        return ""
+
     def _plot_window(self, start_sec: float):
         if self.samples_mono is None or self.sr is None:
             return
@@ -179,21 +187,21 @@ class MatplotlibPlotWidget(QFrame):
         ax.set_ylim([-self._amp_limit, self._amp_limit])
         ax.set_ylabel("Amplitude", fontsize=8, labelpad=0)
 
-        # ---- NEW: deterministic integer / coarse tick positioning ----
+        # New tick style: tick each second, label only odd seconds
         span = _xmax - _xmin
-        if span <= 30:
-            step = 1
-        elif span <= 120:
+        # If the visible span is very large (e.g. > 120s) fall back to coarser labeling
+        if span > 120:
+            # Coarser step to avoid thousands of ticks; still only label odd multiples
             step = 5
-        elif span <= 600:
-            step = 10
-        elif span <= 1800:
-            step = 30
+            ax.xaxis.set_major_locator(mticker.MultipleLocator(base=step))
+            ax.xaxis.set_major_formatter(
+                mticker.FuncFormatter(
+                    lambda x, pos: self._format_hhmmss(int(round(x))) if (int(round(x)) // step) % 2 == 1 and abs(x - round(x)) < 1e-6 else ""
+                )
+            )
         else:
-            step = 60
-        ax.xaxis.set_major_locator(mticker.MultipleLocator(base=step))
-        ax.xaxis.set_major_formatter(mticker.FuncFormatter(self._format_hhmmss))
-        # --------------------------------------------------------------
+            ax.xaxis.set_major_locator(mticker.MultipleLocator(base=1))
+            ax.xaxis.set_major_formatter(mticker.FuncFormatter(self._format_odd_second))
 
         ax.tick_params(axis="both", which="major", labelsize=7, pad=1)
         ax.spines["top"].set_visible(False)
