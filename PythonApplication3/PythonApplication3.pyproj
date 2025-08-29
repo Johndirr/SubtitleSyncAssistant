@@ -4,7 +4,7 @@
     <SchemaVersion>2.0</SchemaVersion>
     <ProjectGuid>86660dda-504f-48ad-988b-78e087f5bacd</ProjectGuid>
     <ProjectHome>.</ProjectHome>
-    <StartupFile>PythonApplication3.py</StartupFile>
+    <StartupFile>subtitle_sync_assistant.py</StartupFile>
     <SearchPath>
     </SearchPath>
     <WorkingDirectory>.</WorkingDirectory>
@@ -22,7 +22,7 @@
     <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="PythonApplication3.py" />
+    <Compile Include="subtitle_sync_assistant.py" />
   </ItemGroup>
   <ItemGroup>
     <Interpreter Include="env\">

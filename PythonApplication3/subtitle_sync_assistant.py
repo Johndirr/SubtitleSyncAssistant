@@ -1,3 +1,16 @@
+# Subtitle Sync Assistant
+# Copyright (C) 2025 Marcus Kühne
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 import sys
 import os
 from typing import List, Tuple, Optional
@@ -1131,8 +1144,75 @@ class MainWindow(QWidget):
         selected = self.synctable.selectionModel().selectedRows()
         if not selected:
             return
-        for idx in sorted(selected, key=lambda x: x.row(), reverse=True):
-            self.synctable.removeRow(idx.row())
+        table = self.synctable
+        rows_to_delete = sorted({idx.row() for idx in selected})
+        total_rows = table.rowCount()
+        if not rows_to_delete:
+            return
+
+        # Heuristic: if we delete more than 15% of rows, rebuild is cheaper
+        REBUILD_THRESHOLD = 0.15
+        rebuild = (len(rows_to_delete) / max(1, total_rows)) > REBUILD_THRESHOLD
+
+        table.setSortingEnabled(False)
+        table.blockSignals(True)
+        if table.selectionModel():
+            table.selectionModel().blockSignals(True)
+        table.setUpdatesEnabled(False)
+
+        try:
+            if rebuild:
+                delete_set = set(rows_to_delete)
+                keep_rows = [r for r in range(total_rows) if r not in delete_set]
+                col_count = table.columnCount()
+
+                # Extract data (clone items)
+                cached_rows = []
+                for r in keep_rows:
+                    row_items = []
+                    for c in range(col_count):
+                        old = table.item(r, c)
+                        if old is None:
+                            row_items.append(None)
+                        else:
+                            # Clone by constructing a new QTableWidgetItem from old
+                            ni = QTableWidgetItem(old)
+                            ni.setBackground(old.background())
+                            row_items.append(ni)
+                    cached_rows.append(row_items)
+
+                table.clearContents()
+                table.setRowCount(len(cached_rows))
+                for new_r, row_items in enumerate(cached_rows):
+                    for c, itm in enumerate(row_items):
+                        if itm:
+                            table.setItem(new_r, c, itm)
+            else:
+                # Just remove rows in reverse order (no rebuild cost)
+                for r in reversed(rows_to_delete):
+                    table.removeRow(r)
+
+            # Recompute zebra striping once
+            for r in range(table.rowCount()):
+                bg = QColor(245, 245, 245) if r % 2 == 0 else QColor(230, 230, 230)
+                for c in range(table.columnCount()):
+                    itm = table.item(r, c)
+                    if itm:
+                        # Preserve any highlight applied earlier (e.g., shifted rows)
+                        # Only override if it still has the old zebra palette
+                        # (Skip if user color differs from the two known zebra backgrounds)
+                        current = itm.background().color()
+                        if current in (QColor(245, 245, 245), QColor(230, 230, 230)):
+                            itm.setBackground(bg)
+
+        finally:
+            table.setUpdatesEnabled(True)
+            if table.selectionModel():
+                table.selectionModel().blockSignals(False)
+            table.blockSignals(False)
+            table.viewport().update()
+
+        # Update plot overlays after structural change
         self.plot2.set_subtitle_intervals(self._collect_synctable_intervals())
         self.plot2.set_selected_subtitle_indices([])
 
@@ -1770,3 +1850,4 @@ if __name__ == "__main__":
     window = MainWindow()
     window.show()
     sys.exit(app.exec_())
+
