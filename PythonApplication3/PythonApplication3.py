@@ -942,6 +942,7 @@ class MainWindow(QWidget):
         act_shift_all = QAction("Shift all times", self)
         act_find_offsets = QAction("Find Offset(s) (BBC-offset-finder)", self)
         act_find_offsets_range = QAction("Find Offset(s) in range (BBC-offset-finder)", self)
+        act_export = QAction("Export subtitle", self)
 
         menu.addAction(act_play)
         menu.addAction(act_jump)
@@ -954,6 +955,8 @@ class MainWindow(QWidget):
         menu.addSeparator()
         menu.addAction(act_find_offsets)
         menu.addAction(act_find_offsets_range)
+        menu.addSeparator()
+        menu.addAction(act_export)
 
         act_play.triggered.connect(self.synctable_play_selected)
         act_jump.triggered.connect(self.synctable_jump_to_selected)
@@ -963,6 +966,7 @@ class MainWindow(QWidget):
         act_shift_all.triggered.connect(lambda: self.shift_times(selected_only=False))
         act_find_offsets.triggered.connect(self.find_offsets_for_selected)
         act_find_offsets_range.triggered.connect(self.find_offsets_for_selected_in_range)
+        act_export.triggered.connect(self.export_synctable_as_srt)
 
         menu.exec_(self.synctable.viewport().mapToGlobal(pos))
 
@@ -1195,6 +1199,74 @@ class MainWindow(QWidget):
                 item = self.synctable.item(r, c)
                 if item:
                     item.setBackground(color)
+
+    def export_synctable_as_srt(self):
+        """Export all rows of the sync table to the SRT path specified in le4."""
+        row_count = self.synctable.rowCount()
+        if row_count == 0:
+            QMessageBox.information(self, "Export Subtitle", "No rows to export.")
+            return
+        target_path = self.le4.text().strip()
+        if not target_path:
+            QMessageBox.warning(self, "Export Subtitle", "Please specify a save path (Save subtitle under...).")
+            return
+        # Ensure .srt extension
+        if not target_path.lower().endswith(".srt"):
+            target_path += ".srt"
+        # Ensure directory exists
+        out_dir = os.path.dirname(target_path) or "."
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+        except Exception as e:
+            QMessageBox.critical(self, "Export Subtitle", f"Cannot create directory:\n{e}")
+            return
+
+        subs = pysrt.SubRipFile()
+        def parse_time(ts: str):
+            # Expected format HH:MM:SS,mmm
+            try:
+                hms, ms = ts.split(",")
+                h, m, s = hms.split(":")
+                return pysrt.SubRipTime(
+                    hours=int(h),
+                    minutes=int(m),
+                    seconds=int(s),
+                    milliseconds=int(ms)
+                )
+            except Exception:
+                return None
+
+        invalid_rows = []
+        for i in range(row_count):
+            s_item = self.synctable.item(i, 0)
+            e_item = self.synctable.item(i, 1)
+            t_item = self.synctable.item(i, 2)
+            if not (s_item and e_item and t_item):
+                invalid_rows.append(i + 1)
+                continue
+            start_time = parse_time(s_item.text())
+            end_time = parse_time(e_item.text())
+            if not start_time or not end_time or (end_time.to_time() <= start_time.to_time()):
+                invalid_rows.append(i + 1)
+                continue
+            text = t_item.text()
+            subs.append(pysrt.SubRipItem(index=len(subs) + 1, start=start_time, end=end_time, text=text))
+
+        if not subs:
+            QMessageBox.warning(self, "Export Subtitle", "No valid rows to export.")
+            return
+
+        try:
+            subs.clean_indexes()
+            subs.save(target_path, encoding="utf-8")
+        except Exception as e:
+            QMessageBox.critical(self, "Export Subtitle", f"Failed to save SRT:\n{e}")
+            return
+
+        msg = f"Exported {len(subs)} subtitle lines to:\n{target_path}"
+        if invalid_rows:
+            msg += f"\n\nSkipped invalid rows: {', '.join(map(str, invalid_rows))}"
+        QMessageBox.information(self, "Export Subtitle", msg)
 
     # ---------- File Selection ----------
     def select_media_file_btn1(self):
