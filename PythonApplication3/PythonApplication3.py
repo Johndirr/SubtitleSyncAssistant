@@ -484,6 +484,95 @@ class OffsetWorker(QObject):
             self.failed.emit(str(e))
 
 
+# ============================= Sliding Offset Worker =============================
+
+class SlidingOffsetWorker(QObject):
+    """
+    Similar to OffsetWorker but each row has its own (already sliced) reference
+    window and associated start offset (ref_offset_sec). This realizes a
+    fixed-length sliding reference window that advances according to subtitle
+    start times.
+    """
+    progress = pyqtSignal(int, str)
+    result = pyqtSignal(int, object, str)
+    finished = pyqtSignal()
+    failed = pyqtSignal(str)
+    cancelled = pyqtSignal()
+
+    def __init__(self,
+                 new_wave: np.ndarray,
+                 new_sr: int,
+                 rows: List[Tuple[int, float, float]],
+                 ref_windows: List[Tuple[np.ndarray, int, float]],  # (ref_slice, ref_sr, ref_offset_sec)
+                 min_duration: float = 1.0):
+        super().__init__()
+        self.new_wave = new_wave.astype(np.float32)
+        self.new_sr = new_sr
+        self.rows = rows
+        self.ref_windows = ref_windows
+        self.min_duration = min_duration
+        self._abort = False
+
+    def abort(self):
+        self._abort = True
+
+    def _check_abort(self):
+        if self._abort:
+            raise RuntimeError("__ABORT__")
+
+    @staticmethod
+    def _resample_linear(samples: np.ndarray, src_sr: int, dst_sr: int) -> np.ndarray:
+        if src_sr == dst_sr or samples.size == 0:
+            return samples
+        ratio = dst_sr / src_sr
+        new_len = max(1, int(round(samples.shape[0] * ratio)))
+        x_old = np.linspace(0.0, 1.0, samples.shape[0], endpoint=False)
+        x_new = np.linspace(0.0, 1.0, new_len, endpoint=False)
+        return np.interp(x_new, x_old, samples).astype(np.float32)
+
+    def run(self):
+        if find_offset_between_buffers is None:
+            self.failed.emit("audio-offset-finder not installed (pip install audio-offset-finder)")
+            return
+        try:
+            total = len(self.rows)
+            for seq, ((idx, start_sec, end_sec), (ref_slice, ref_sr, ref_offset_sec)) in enumerate(zip(self.rows, self.ref_windows), start=1):
+                self._check_abort()
+                dur = end_sec - start_sec
+                if dur <= 0 or dur < self.min_duration:
+                    self.result.emit(idx, None, "too short")
+                    continue
+                start_i = int(start_sec * self.new_sr)
+                end_i = min(int(end_sec * self.new_sr), self.new_wave.shape[0])
+                if end_i <= start_i:
+                    self.result.emit(idx, None, "empty")
+                    continue
+                snippet = self.new_wave[start_i:end_i]
+                # Resample snippet to ref_sr if needed
+                if self.new_sr != ref_sr:
+                    snippet = self._resample_linear(snippet, self.new_sr, ref_sr)
+                try:
+                    res = find_offset_between_buffers(ref_slice.astype(np.float32), snippet, ref_sr)
+                except Exception as ex:
+                    self.result.emit(idx, None, f"err:{ex}")
+                    continue
+                if not isinstance(res, dict) or "time_offset" not in res:
+                    self.result.emit(idx, None, "bad-result")
+                    continue
+                time_offset_global = float(res["time_offset"]) + ref_offset_sec
+                delta = start_sec - time_offset_global
+                self.result.emit(idx, delta, "ok")
+                self.progress.emit(idx, f"{seq}/{total} (row {idx+1})")
+            self.finished.emit()
+        except RuntimeError as ex:
+            if str(ex) == "__ABORT__":
+                self.cancelled.emit()
+            else:
+                self.failed.emit(str(ex))
+        except Exception as e:
+            self.failed.emit(str(e))
+
+
 # ============================= Busy Dialog =============================
 
 class BusyDialog(QDialog):
@@ -1427,24 +1516,67 @@ class MainWindow(QWidget):
             QMessageBox.warning(self, "Reference Range", "Range outside reference duration.")
             return
 
-        start_i = int(ref_start * self._ref_sr_cache)
-        end_i = min(int(ref_end * self._ref_sr_cache), self._ref_mono_cache.shape[0])
-        if end_i - start_i < 100:
-            QMessageBox.warning(self, "Reference Range", "Range too short.")
+        window_len = ref_end - ref_start
+        if window_len <= 0:
+            QMessageBox.warning(self, "Reference Range", "Invalid range length.")
             return
 
-        ref_slice = self._ref_mono_cache[start_i:end_i]
+        multiple = len(rows) > 1
 
-        self._busy_offset = BusyDialog(self, title="Finding Offsets (Range)",
-                                       message=f"Searching {ref_start:.3f}s–{ref_end:.3f}s …",
-                                       cancellable=True)
-        self._busy_offset.cancel_requested.connect(self.cancel_offset_worker)
-        self._busy_offset.show()
+        if not multiple:
+            # Original single-window behavior
+            start_i = int(ref_start * self._ref_sr_cache)
+            end_i = min(int(ref_end * self._ref_sr_cache), self._ref_mono_cache.shape[0])
+            if end_i - start_i < 100:
+                QMessageBox.warning(self, "Reference Range", "Range too short.")
+                return
+            ref_slice = self._ref_mono_cache[start_i:end_i]
+            self._busy_offset = BusyDialog(self, title="Finding Offsets (Range)",
+                                           message=f"Searching {ref_start:.3f}s–{ref_end:.3f}s …",
+                                           cancellable=True)
+            self._busy_offset.cancel_requested.connect(self.cancel_offset_worker)
+            self._busy_offset.show()
+            thread = QThread()
+            worker = OffsetWorker(ref_slice, self._ref_sr_cache,
+                                  self._new_mono_cache, self._new_sr_cache,
+                                  rows, 1.0, ref_offset_sec=ref_start)
+        else:
+            # Sliding window mode
+            # Sort rows by start time (keep original idx for result mapping)
+            rows_sorted = sorted(rows, key=lambda x: x[1])
+            anchor_start = rows_sorted[0][1]
+            ref_windows: List[Tuple[np.ndarray, int, float]] = []
+            # Build each shifted reference slice
+            for (row_idx, row_start, _row_end) in rows_sorted:
+                shift = row_start - anchor_start
+                win_start = ref_start + shift
+                # Clamp window inside reference audio
+                if win_start < 0:
+                    win_start = 0.0
+                win_end = win_start + window_len
+                if win_end > ref_total_sec:
+                    # Shift backwards if at end
+                    win_start = max(0.0, ref_total_sec - window_len)
+                    win_end = ref_total_sec
+                start_i = int(win_start * self._ref_sr_cache)
+                end_i = min(int(win_end * self._ref_sr_cache), self._ref_mono_cache.shape[0])
+                if end_i - start_i < 100:
+                    # Too short slice; mark as invalid (empty array) -> worker will skip
+                    ref_slice = np.array([], dtype=np.float32)
+                else:
+                    ref_slice = self._ref_mono_cache[start_i:end_i]
+                ref_windows.append((ref_slice, self._ref_sr_cache, win_start))
 
-        thread = QThread()
-        worker = OffsetWorker(ref_slice, self._ref_sr_cache,
-                              self._new_mono_cache, self._new_sr_cache,
-                              rows, 1.0, ref_offset_sec=ref_start)
+            self._busy_offset = BusyDialog(self, title="Finding Offsets (Sliding Range)",
+                                           message=f"Sliding window {window_len:.3f}s over {len(rows_sorted)} lines …",
+                                           cancellable=True)
+            self._busy_offset.cancel_requested.connect(self.cancel_offset_worker)
+            self._busy_offset.show()
+            # Use sliding worker with rows in same order we built windows
+            thread = QThread()
+            worker = SlidingOffsetWorker(self._new_mono_cache, self._new_sr_cache,
+                                         rows_sorted, ref_windows, 1.0)
+
         self._offset_thread = thread
         self._offset_worker = worker
         worker.moveToThread(thread)
