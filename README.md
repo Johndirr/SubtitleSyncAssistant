@@ -12,17 +12,19 @@ Load one reference media file, one new media file, and an existing subtitle file
 
 I wrote this tool by almost exclusively using the Github Copilot AI assistant. Even the readme was written by it. It was a fun experiment to see how far I could get with it.
 The code is not perfect, but it works well enough for my own use cases. I hope it can be useful to others as well.
+
 PS: No way we get AGI soon :)
+
+PPS: Thank you to the BBC for their excellent audio-offset-finder
 
 ## Main Features
 
 - Dual waveform display (reference vs new) with subtitle interval highlighting
-- Selection ? waveform highlight coupling
-- Per?line audio playback and “jump to” navigation
+- Audio playback and “jump to” navigation
 - Edit individual subtitle line (start, end, text) with validation
 - Shift times (selected or all) with visual highlight of modified rows
-- Automatic per?line offset detection using BBC audio offset finder
-- Range + sliding window mode for multi?line offset searches
+- Automatic offset detection using BBC audio offset finder
+- Range + sliding window mode for multiline offset searches
 - Export adjusted sync table to SRT (via context menu)
 
 ## Installation
