@@ -8,6 +8,12 @@ A small PyQt5 desktop tool to realign subtitle (`.srt`) files against a “referen
 
 Load one reference media file, one new media file, and an existing subtitle file; inspect both waveforms with subtitle bands; measure per?line offsets using audio correlation; adjust timings (edit or shift); export a corrected SRT.
 
+## Personal Note
+
+I wrote this tool by almost exclusively using the Github Copilot AI assistant. Even the readme was written by it. It was a fun experiment to see how far I could get with it.
+The code is not perfect, but it works well enough for my own use cases. I hope it can be useful to others as well.
+PS: No way we get AGI soon :)
+
 ## Main Features
 
 - Dual waveform display (reference vs new) with subtitle interval highlighting
