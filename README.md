@@ -1,5 +1,7 @@
 # Subtitle Sync Assistant
 
+![Application Screenshot](Images\Screenshot.jpg)
+
 A small PyQt5 desktop tool to realign subtitle (`.srt`) files against a “reference” and a “new” media file by visual inspection and automatic audio offset detection.
 
 ## Purpose
