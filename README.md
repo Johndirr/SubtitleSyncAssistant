@@ -87,13 +87,14 @@ You should have received a copy of the GNU GPL version 3 along with this program
 
 Because this application uses PyQt5 (GPL), the combined work must be distributed under GPLv3 (or later) and you may not impose additional restrictions (for example, you cannot make it “non?commercial only”). Users are free to run, study, modify, and redistribute the program under the GPL terms.
 
-### Third?Party Components (summary)
+### Third Party Components (summary)
 
 - PyQt5 – GPLv3
 - numpy – BSD 3-Clause
 - matplotlib – Matplotlib (BSD-style) license
 - pydub – MIT
 - pysrt – LGPLv3
-- audio-offset-finder – (check package metadata, typically permissive; include its license text)
-- ffmpeg (runtime dependency) – LGPL or GPL depending on build options (if you redistribute binaries, provide corresponding license text)
+- audio-offset-finder - Apache License 2.0
+- ffmpeg - LGPL 2.1+
 
+See THIRD_PARTY_NOTICES.md for details.
