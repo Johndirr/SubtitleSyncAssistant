@@ -15,7 +15,7 @@ import sys
 import os
 from typing import List, Tuple, Optional
 
-from PyQt5.QtCore import Qt, QByteArray, QBuffer, QThread, pyqtSignal, QObject
+from PyQt5.QtCore import Qt, QByteArray, QBuffer, QThread, pyqtSignal, QObject, QTimer
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QSizePolicy, QFrame, QLabel,
     QTableWidget, QTableWidgetItem, QHeaderView, QFileDialog, QMessageBox, QSlider, QAbstractItemView,
@@ -41,12 +41,14 @@ except ImportError:
 # ============================= Matplotlib Plot Widget =============================
 
 class MatplotlibPlotWidget(QFrame):
+    playingChanged = pyqtSignal(bool)
+
     def __init__(self, title: str = "Plot", window_duration: int = 20):
         super().__init__()
         self.setFrameStyle(QFrame.Box | QFrame.Plain)
         self.setLineWidth(1)
-        self.setMinimumHeight(180)
-        self.setMaximumHeight(180)
+        self.setMinimumHeight(200)
+        self.setMaximumHeight(220)
 
         self.window_duration = window_duration
         self.samples: Optional[np.ndarray] = None
@@ -56,6 +58,17 @@ class MatplotlibPlotWidget(QFrame):
 
         self.subtitle_intervals: List[Tuple[float, float]] = []
         self.selected_subtitle_indices: set[int] = set()
+
+        # Playback state
+        self.audio_segment: Optional[AudioSegment] = None
+        self.audio_output: Optional[QAudioOutput] = None
+        self.audio_buffer: Optional[QBuffer] = None
+        self.audio_data: Optional[QByteArray] = None
+        self.playhead_sec: float = 0.0
+        self._play_origin_sec: float = 0.0
+        self._timer = QTimer(self)
+        self._timer.setInterval(33)  # ~30 FPS
+        self._timer.timeout.connect(self._on_tick)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -69,7 +82,26 @@ class MatplotlibPlotWidget(QFrame):
         left_controls = QWidget(self)
         lc_layout = QHBoxLayout(left_controls)
         lc_layout.setContentsMargins(0, 0, 0, 0)
-        lc_layout.setSpacing(4)
+        lc_layout.setSpacing(6)
+
+        # Play/Pause button and position label
+        self.play_btn = QPushButton("▶", self)
+        self.play_btn.setCheckable(True)
+        self.play_btn.setFixedSize(28, 22)
+        self.play_btn.setToolTip("Play/Pause audio from playhead. Right-click waveform to set playhead.")
+        self.play_btn.toggled.connect(self._on_play_toggled)
+
+        # Change font size of play button
+        f = self.play_btn.font()
+        f.setPointSize(f.pointSize() + 10)
+        self.play_btn.setFont(f)
+
+        # tighten padding so the glyph sits more centrally
+        self.play_btn.setStyleSheet("QPushButton { padding-top: -2px; padding-bottom: 0px; }")
+
+        self.pos_lbl = QLabel("00:00:00,000", self)
+        self.pos_lbl.setToolTip("Current playhead position")
+
         amp_lbl = QLabel("Amp:", self)
         amp_lbl.setToolTip("Visible +/- amplitude (vertical zoom of normalized waveform).")
         self.amp_spin = QDoubleSpinBox(self)
@@ -79,6 +111,9 @@ class MatplotlibPlotWidget(QFrame):
         self.amp_spin.setValue(1.05)
         self.amp_spin.setToolTip("Adjust vertical zoom (does not alter data).")
         self.amp_spin.valueChanged.connect(self._on_amp_changed)
+
+        lc_layout.addWidget(self.play_btn)
+        lc_layout.addWidget(self.pos_lbl)
         lc_layout.addWidget(amp_lbl)
         lc_layout.addWidget(self.amp_spin)
         top_bar.addWidget(left_controls)
@@ -180,6 +215,215 @@ class MatplotlibPlotWidget(QFrame):
             return self._format_hhmmss(whole)
         return ""
 
+    def _on_mouse_press(self, event):
+        # Right-click sets playhead at cursor x
+        if event.button == 3 and event.inaxes and event.xdata is not None:
+            self._set_playhead(float(event.xdata))
+            return
+        if event.button == 1 and event.inaxes:
+            self._dragging = True
+            self._drag_start_x_pixel = event.x
+            self._drag_start_slider = self.slider.value()
+
+    def _on_mouse_release(self, _event):
+        self._dragging = False
+        self._drag_start_x_pixel = None
+        self._drag_start_slider = None
+
+    def _on_mouse_move(self, event):
+        if self._dragging and event.inaxes and self._drag_start_x_pixel is not None:
+            ax = event.inaxes
+            bbox = ax.get_window_extent()
+            axis_width = bbox.width
+            if axis_width <= 0:
+                return
+            seconds_per_pixel = self.window_duration / axis_width
+            dx_pixels = self._drag_start_x_pixel - event.x
+            dx_seconds = dx_pixels * seconds_per_pixel
+            new_slider = int(self._drag_start_slider + dx_seconds)
+            new_slider = max(self.slider.minimum(), min(self.slider.maximum(), new_slider))
+            if new_slider != self.slider.value():
+                self.slider.setValue(new_slider)
+                self._drag_start_x_pixel = event.x
+                self._drag_start_slider = new_slider
+
+    def _on_amp_changed(self, val: float):
+        """User changed vertical zoom."""
+        self._amp_limit = max(0.01, float(val))
+        self._plot_window(float(self.slider.value()))
+
+    def set_amplitude_limit(self, max_abs: float):
+        """Programmatic vertical zoom setter."""
+        if max_abs <= 0:
+            return
+        blocked = self.amp_spin.blockSignals(True)
+        self.amp_spin.setValue(max_abs)
+        self.amp_spin.blockSignals(blocked)
+        self._amp_limit = max_abs
+        self._plot_window(float(self.slider.value()))
+
+    def set_audio_segment(self, segment: AudioSegment):
+        """Attach full-quality audio for playback."""
+        self.audio_segment = segment
+        total = (len(segment) / 1000.0) if segment else 0.0
+        if self.playhead_sec > total:
+            self.playhead_sec = max(0.0, total - 0.001)
+        self.pos_lbl.setText(self._format_hhmmss_mmm(self.playhead_sec))
+
+    def _format_hhmmss_mmm(self, seconds: float) -> str:
+        if seconds < 0:
+            seconds = 0.0
+        h = int(seconds // 3600)
+        m = int((seconds % 3600) // 60)
+        s = int(seconds % 60)
+        ms = int(round((seconds - int(seconds)) * 1000))
+        if ms == 1000:
+            ms = 0
+            s += 1
+        return f"{h:02}:{m:02}:{s:02},{ms:03}"
+
+    def _set_playhead(self, sec: float, center_if_needed: bool = False):
+        self.playhead_sec = max(0.0, min(sec, self.total_duration if self.total_duration else sec))
+        self.pos_lbl.setText(self._format_hhmmss_mmm(self.playhead_sec))
+        if center_if_needed:
+            xmin = float(self.slider.value())
+            xmax = xmin + self.window_duration
+            if not (xmin <= self.playhead_sec <= xmax):
+                self.jump_to_time(self.playhead_sec, center=True)
+        self._plot_window(float(self.slider.value()))
+
+    def _update_play_glyph(self, playing: bool):
+        """Update the play button glyph and tooltip based on playing state."""
+        self.play_btn.setText("⏸" if playing else "▶")
+        self.play_btn.setToolTip(
+            "Pause audio" if playing else "Play/Pause audio from playhead. Right-click waveform to set playhead."
+        )
+
+    def _on_play_toggled(self, playing: bool):
+        self._update_play_glyph(playing)
+        if playing:
+            # Notify parent before starting so sibling widgets can stop
+            self.playingChanged.emit(True)
+            ok = self._start_playback()
+            if not ok:
+                blocked = self.play_btn.blockSignals(True)
+                self.play_btn.setChecked(False)
+                self.play_btn.blockSignals(blocked)
+                self._update_play_glyph(False)
+                self.playingChanged.emit(False)
+        else:
+            self._stop_playback(paused=True)
+            self.playingChanged.emit(False)
+
+    def _start_playback(self) -> bool:
+        if self.audio_segment is None:
+            return False
+        media_total = len(self.audio_segment) / 1000.0
+        start_sec = max(0.0, min(self.playhead_sec, media_total))
+        self._play_origin_sec = start_sec
+
+        part = self.audio_segment[int(start_sec * 1000):]
+        if len(part) <= 0:
+            return False
+
+        if part.sample_width != 2:
+            part = part.set_sample_width(2)
+        fmt = QAudioFormat()
+        fmt.setSampleRate(part.frame_rate)
+        fmt.setChannelCount(part.channels)
+        fmt.setSampleSize(part.sample_width * 8)
+        fmt.setCodec("audio/pcm")
+        fmt.setByteOrder(QAudioFormat.LittleEndian)
+        fmt.setSampleType(QAudioFormat.SignedInt)
+
+        # Ensure any previous playback is fully disposed before starting again
+        self._dispose_audio()
+
+        self.audio_data = QByteArray(part.raw_data)
+        self.audio_buffer = QBuffer()
+        self.audio_buffer.setData(self.audio_data)
+        self.audio_buffer.open(QBuffer.ReadOnly)
+        self.audio_output = QAudioOutput(fmt, self)
+        self.audio_output.stateChanged.connect(self._on_audio_state_changed)
+        self.audio_output.start(self.audio_buffer)
+
+        self._timer.start()
+        self._set_playhead(start_sec, center_if_needed=True)
+        return True
+
+    def _stop_playback(self, paused: bool):
+        # Toggle off UI timer and tear down audio safely
+        self._dispose_audio()
+        self._plot_window(float(self.slider.value()))
+
+    def _dispose_audio(self):
+        """Safely stop and delete audio objects, guarding against re-entrancy from stateChanged."""
+        # Stop UI timer first
+        self._timer.stop()
+        out = self.audio_output
+        buf = self.audio_buffer
+        # Detach from fields early to avoid races with stateChanged
+        self.audio_output = None
+        self.audio_buffer = None
+        self.audio_data = None
+        if out is not None:
+            try:
+                try:
+                    out.stateChanged.disconnect(self._on_audio_state_changed)
+                except Exception:
+                    pass
+                out.stop()
+            except Exception:
+                pass
+            try:
+                out.deleteLater()
+            except Exception:
+                pass
+        if buf is not None:
+            try:
+                buf.close()
+            except Exception:
+                pass
+            try:
+                buf.deleteLater()
+            except Exception:
+                pass
+
+    def _on_audio_state_changed(self, state):
+        try:
+            idle_state = getattr(QAudioOutput, "IdleState")
+            stopped_state = getattr(QAudioOutput, "StoppedState")
+        except Exception:
+            idle_state = 3
+            stopped_state = 2
+        if state in (idle_state, stopped_state):
+            # Playback finished or stopped by device; dispose safely and untoggle button
+            self._dispose_audio()
+            blocked = self.play_btn.blockSignals(True)
+            self.play_btn.setChecked(False)
+            self.play_btn.blockSignals(blocked)
+            self._update_play_glyph(False)
+            self.playingChanged.emit(False)
+            self._plot_window(float(self.slider.value()))
+
+    def _on_tick(self):
+        if not self.audio_output:
+            self._timer.stop()
+            return
+        try:
+            processed = self.audio_output.processedUSecs() / 1_000_000.0
+        except Exception:
+            processed = self._timer.interval() / 1000.0
+        new_pos = self._play_origin_sec + max(0.0, processed)
+        self.playhead_sec = new_pos
+        self.pos_lbl.setText(self._format_hhmmss_mmm(self.playhead_sec))
+        xmin = float(self.slider.value())
+        xmax = xmin + self.window_duration
+        if self.playhead_sec > xmax - (self.window_duration * 0.25):
+            self.jump_to_time(self.playhead_sec, center=True)
+        else:
+            self._plot_window(xmin)
+
     def _plot_window(self, start_sec: float):
         if self.samples_mono is None or self.sr is None:
             return
@@ -229,51 +473,39 @@ class MatplotlibPlotWidget(QFrame):
                     alpha = 0.38 if i in self.selected_subtitle_indices else 0.18
                     ax.axvspan(max(start, _xmin), min(end, _xmax), color=color, alpha=alpha, zorder=0)
 
+        # Playhead indicator
+        if self.playhead_sec is not None and _xmin <= self.playhead_sec <= _xmax:
+            ax.axvline(self.playhead_sec, color="deepskyblue", linewidth=1.2, alpha=0.9, zorder=5)
+
         self.canvas.draw()
-
-    def _on_mouse_press(self, event):
-        if event.button == 1 and event.inaxes:
-            self._dragging = True
-            self._drag_start_x_pixel = event.x
-            self._drag_start_slider = self.slider.value()
-
-    def _on_mouse_release(self, _event):
-        self._dragging = False
-        self._drag_start_x_pixel = None
-        self._drag_start_slider = None
-
-    def _on_mouse_move(self, event):
-        if self._dragging and event.inaxes and self._drag_start_x_pixel is not None:
-            ax = event.inaxes
-            bbox = ax.get_window_extent()
-            axis_width = bbox.width
-            if axis_width <= 0:
-                return
-            seconds_per_pixel = self.window_duration / axis_width
-            dx_pixels = self._drag_start_x_pixel - event.x
-            dx_seconds = dx_pixels * seconds_per_pixel
-            new_slider = int(self._drag_start_slider + dx_seconds)
-            new_slider = max(self.slider.minimum(), min(self.slider.maximum(), new_slider))
-            if new_slider != self.slider.value():
-                self.slider.setValue(new_slider)
-                self._drag_start_x_pixel = event.x
-                self._drag_start_slider = new_slider
-
-    def _on_amp_changed(self, val: float):
-        """User changed vertical zoom."""
-        self._amp_limit = max(0.01, float(val))
-        self._plot_window(float(self.slider.value()))
-
-    def set_amplitude_limit(self, max_abs: float):
-        """Programmatic vertical zoom setter."""
-        if max_abs <= 0:
+    
+    def stop_playback_external(self):
+        """Stop playback initiated by another widget without re-entering toggle/emit loops."""
+        if self.audio_output is not None:
+            blocked = self.play_btn.blockSignals(True)
+            try:
+                self.play_btn.setChecked(False)
+            finally:
+                self.play_btn.blockSignals(blocked)
+            self._stop_playback(paused=True)
+            self._update_play_glyph(False)
+    
+    def reset_view(self):
+        """Reset the plot view to show the complete waveform."""
+        if self.samples_mono is None or self.sr is None:
             return
-        blocked = self.amp_spin.blockSignals(True)
-        self.amp_spin.setValue(max_abs)
-        self.amp_spin.blockSignals(blocked)
-        self._amp_limit = max_abs
-        self._plot_window(float(self.slider.value()))
-
+        if self.total_duration <= self.window_duration:
+            # If the total duration is less than or equal to the window duration,
+            # we can show the entire waveform without scrolling.
+            self.slider.setMaximum(0)
+            self.slider.setEnabled(False)
+            self._plot_window(0)
+        else:
+            # Calculate the new window to show the complete waveform
+            self.slider.setMaximum(int(self.total_duration - self.window_duration))
+            self.slider.setEnabled(True)
+            self.slider.setValue(0)
+            self._plot_window(0)
 
 # ============================= Analyze Worker =============================
 
@@ -879,6 +1111,10 @@ class MainWindow(QWidget):
 
         self.plot1 = MatplotlibPlotWidget("Reference Audio Waveform")
         self.plot2 = MatplotlibPlotWidget("New Audio Waveform")
+        # Wire mutual exclusion of playback: when one starts, stop the other
+        self.plot1.playingChanged.connect(lambda on: on and self.plot2.stop_playback_external())
+        self.plot2.playingChanged.connect(lambda on: on and self.plot1.stop_playback_external())
+
         main_layout.addWidget(self.plot1)
         main_layout.addWidget(self.plot2)
         main_layout.addSpacing(8)
@@ -1459,6 +1695,10 @@ class MainWindow(QWidget):
         self.plot1.plot_waveform(result["ref_display"], result["ref_rate"])
         self.plot2.plot_waveform(result["new_display"], result["new_rate"])
 
+        # Attach full-quality audio to plots for playback
+        self.plot1.set_audio_segment(self.ref_audio_segment)
+        self.plot2.set_audio_segment(self.new_audio_segment)
+
         rows = result["rows"]
         fmt = lambda t: f"{t.hours:02}:{t.minutes:02}:{t.seconds:02},{t.milliseconds:03}"
         self.referencetable.setRowCount(len(rows))
@@ -1844,10 +2084,19 @@ class MainWindow(QWidget):
         except ValueError:
             return None
 
+    def stop_playback_external(self):
+        """Stop playback initiated by another widget without re-entering toggle/emit loops."""
+        if self.audio_output is not None:
+            blocked = self.play_btn.blockSignals(True)
+            try:
+                self.play_btn.setChecked(False)
+            finally:
+                self.play_btn.blockSignals(blocked)
+            self._stop_playback(paused=True)
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
     sys.exit(app.exec_())
-
