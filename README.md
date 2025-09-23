@@ -20,12 +20,19 @@ PPS: Thank you to the BBC for their excellent audio-offset-finder
 ## Main Features
 
 - Dual waveform display (reference vs new) with subtitle interval highlighting
-- Audio playback and “jump to” navigation
+- Audio playback and jump-to navigation
 - Edit individual subtitle line (start, end, text) with validation
 - Shift times (selected or all) with visual highlight of modified rows
 - Automatic offset detection using BBC audio offset finder
-- Range + sliding window mode for multiline offset searches
-- Export adjusted sync table to SRT (via context menu)
+- Range and sliding-window modes for multi-line offset searches
+- Export adjusted sync table to SRT
+- Color coding of subtitle lines (unmodified, modified) with the following scheme:
+  - White: unmodified
+  - Yellow: modified (edit or shift)
+  - Orange: offset detected
+  - Red: invalid (end before start, empty text)
+
+For a developer-oriented overview of the package layout and how modules interact, see README_STRUCTURE.md.
 
 ## Installation
 
@@ -39,12 +46,12 @@ Required Python packages:
 - numpy
 - pydub
 - pysrt
-- audio-offset-finder (mandatory for offset detection)
+- audio-offset-finder (required for offset detection features)
 
-Recommended install steps (Windows / PowerShell example):
+Example setup (Windows / PowerShell):
 
-```powershell
-# Install Python 3.13+ from python.org
+```
+# Install Python 3.10+ from python.org
 
 # Verify python and pip are in PATH and working
 python --version
@@ -62,13 +69,13 @@ ffmpeg -version
 
 ## Run
 
-From the project root (where `subtitle_sync_assistant.py` resides): python subtitle_sync_assistant.py
+From the project root (where `subtitle_sync_assistant.py` resides): `python subtitle_sync_assistant.py`
 
 ## Typical Workflow
 
 1. Load reference media, new media, and the original subtitle.
-2. Click “Analyze...” to populate waveform plots and tables.
-3. (Optional) Select lines and run offset detection (“Find Offset(s)” or range/sliding variant).
+2. Click "“"Analyze..."”" to populate waveform plots and tables.
+3. (Optional) Select lines and run offset detection ("“"Find Offset(s)"”" or range/sliding variant).
 4. Shift or edit lines as required.
 5. Export the synchronized subtitle via the sync table context menu.
 

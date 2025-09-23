@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Subtitle Sync Assistant
-# Copyright (C) 2025  Subtitle Sync Assistant contributors
+# This file is part of Subtitle Sync Assistant.
+#
+# Copyright (C) 2025 Subtitle Sync Assistant contributors
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -15,25 +17,22 @@
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-# Legacy entry for the monolithic script preserved for compatibility.
-# The application has been refactored into a modular package under `ssa/`.
-# This shim keeps the same behavior: launching the MainWindow when executed.
+"""Application entry point that launches the MainWindow."""
+from __future__ import annotations
 
 import sys
 from PyQt5.QtWidgets import QApplication
+from .main_window import MainWindow
 
-try:
-    # Prefer new modular entry
-    from ssa.app.main import run as _run
-except Exception:
-    # Fallback: if package import fails, attempt to run inline minimal app
-    def _run():
-        from ssa.app.main_window import MainWindow
-        app = QApplication(sys.argv)
-        window = MainWindow()
-        window.show()
-        sys.exit(app.exec_())
+
+def run():
+    """Create the QApplication and show the MainWindow, then enter the loop."""
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    # exec_ is the Qt event loop entry point
+    sys.exit(app.exec_())
 
 
 if __name__ == "__main__":
-    _run()
+    run()

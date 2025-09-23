@@ -23,6 +23,19 @@
     <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="ssa\app\main.py" />
+    <Compile Include="ssa\app\main_window.py" />
+    <Compile Include="ssa\app\__init__.py" />
+    <Compile Include="ssa\services\audio.py" />
+    <Compile Include="ssa\services\__init__.py" />
+    <Compile Include="ssa\ui\dialogs.py" />
+    <Compile Include="ssa\ui\plot_widget.py" />
+    <Compile Include="ssa\ui\__init__.py" />
+    <Compile Include="ssa\utils\timecodes.py" />
+    <Compile Include="ssa\workers\analyze.py" />
+    <Compile Include="ssa\workers\offset.py" />
+    <Compile Include="ssa\workers\__init__.py" />
+    <Compile Include="ssa\__init__.py" />
     <Compile Include="subtitle_sync_assistant.py" />
   </ItemGroup>
   <ItemGroup>
@@ -35,6 +48,14 @@
       <PathEnvironmentVariable>PYTHONPATH</PathEnvironmentVariable>
       <Architecture>X64</Architecture>
     </Interpreter>
+  </ItemGroup>
+  <ItemGroup>
+    <Folder Include="ssa\" />
+    <Folder Include="ssa\app\" />
+    <Folder Include="ssa\services\" />
+    <Folder Include="ssa\ui\" />
+    <Folder Include="ssa\utils\" />
+    <Folder Include="ssa\workers\" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
   <!-- Uncomment the CoreCompile target to enable the Build command in
