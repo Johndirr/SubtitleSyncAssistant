@@ -65,6 +65,7 @@ from PyQt5.QtWidgets import (
 
 from ..ui.plot_widget import MatplotlibPlotWidget
 from ..ui.dialogs import BusyDialog, RangeSelectDialog, EditSubtitleDialog
+from ..ui.preview import PreviewImagesWindow
 from ..workers.analyze import AnalyzeWorker
 from ..workers.offset import OffsetWorker, SlidingOffsetWorker
 from ..services.audio import segment_to_float_array
@@ -108,6 +109,9 @@ class MainWindow(QWidget):
         self._busy_offset: Optional[BusyDialog] = None
         self._shift_sel_color = QColor(255, 225, 160)  # selected rows shifted
         self._shift_all_color = QColor(255, 240, 200)  # all rows shifted
+
+        # Preview window (created lazily)
+        self._preview_win: Optional[PreviewImagesWindow] = None
 
     # ---------- UI ----------
     def _build_ui(self):
@@ -192,6 +196,57 @@ class MainWindow(QWidget):
         for c in stretch_cols:
             table.horizontalHeader().setSectionResizeMode(c, QHeaderView.Stretch)
 
+    def _preview_window(self) -> PreviewImagesWindow:
+        """Return the singleton preview window, creating it on first use.
+
+        The preview is created lazily to avoid extra widget/thread overhead
+        during startup. It is parented to the main window so it closes with it.
+        """
+        # Lazily instantiate and reuse a single PreviewImagesWindow instance
+        if self._preview_win is None:
+            self._preview_win = PreviewImagesWindow(self)
+        return self._preview_win
+
+    def _selected_row_start(self, table: QTableWidget) -> Optional[float]:
+        """Return start time (seconds) from the first selected row in a table.
+
+        Parameters
+        ----------
+        table: QTableWidget
+            Either the reference or sync table. Column 0 holds the start time.
+
+        Returns
+        -------
+        Optional[float]
+            Parsed seconds value, or None if no selection/invalid cell.
+        """
+        # Get current row selection; we use the first selected row if any
+        sel = table.selectionModel().selectedRows()
+        if not sel:
+            return None
+        # Start time is stored in column 0 as an SRT time string
+        itm = table.item(sel[0].row(), 0)
+        if not itm:
+            return None
+        # Reuse helper to parse HH:MM:SS,mmm -> seconds (float)
+        return self._parse_time_to_seconds(itm.text())
+
+    def _update_preview_images_from_selection(self):
+        """Open/refresh the preview using the current table selections.
+
+        Collects start times from both tables and the media file paths from
+        the line edits, then forwards these to the preview window so it can
+        extract and display frames side by side.
+        """
+        # Read the selected start times (seconds) from both tables
+        ref_time = self._selected_row_start(self.referencetable)
+        new_time = self._selected_row_start(self.synctable)
+        # Read the media file paths from the top inputs (empty -> None)
+        ref_path = self.le1.text().strip() if self.le1.text().strip() else None
+        new_path = self.le2.text().strip() if self.le2.text().strip() else None
+        # Ask the preview to show/update with the provided selection
+        self._preview_window().show_for_selection(ref_path, ref_time, new_path, new_time)
+
     def align_table_columns_left(self, table: QTableWidget):
         """Left-align header and cell text for all columns/rows."""
         for col in range(table.columnCount()):
@@ -203,16 +258,34 @@ class MainWindow(QWidget):
                 if cell:
                     cell.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
+    def _add_preview_to_menu(self, menu: QMenu):
+        """Append a 'Show preview images' action to a given context menu.
+
+        The action opens or refreshes the Preview Images window based on the
+        current selection in the tables.
+        """
+        # Create the action and wire it to the update handler
+        act_preview = QAction("Show preview images", self)
+        act_preview.triggered.connect(self._update_preview_images_from_selection)
+        # Add to the provided menu at the current insertion point
+        menu.addAction(act_preview)
+
     # ---------- Selection -> plot highlight ----------
     def on_reference_table_selection(self):
         """Highlight selected reference rows on the reference plot."""
         indices = [idx.row() for idx in self.referencetable.selectionModel().selectedRows()]
         self.plot1.set_selected_subtitle_indices(indices)
+        # If preview window is open, update its images
+        if self._preview_win and self._preview_win.isVisible():
+            self._update_preview_images_from_selection()
 
     def on_sync_table_selection(self):
         """Highlight selected sync rows on the new plot."""
         indices = [idx.row() for idx in self.synctable.selectionModel().selectedRows()]
         self.plot2.set_selected_subtitle_indices(indices)
+        # If preview window is open, update its images
+        if self._preview_win and self._preview_win.isVisible():
+            self._update_preview_images_from_selection()
 
     # ---------- Context Menus ----------
     def show_synctable_context_menu(self, pos):
@@ -227,10 +300,12 @@ class MainWindow(QWidget):
         act_find_offsets = QAction("Find Offset(s) (BBC-offset-finder)", self)
         act_find_offsets_range = QAction("Find Offset(s) in range (BBC-offset-finder)", self)
         act_export = QAction("Export subtitle", self)
+        act_preview = QAction("Show preview images", self)
 
         menu.addAction(act_play); menu.addAction(act_jump); menu.addAction(act_edit); menu.addSeparator()
         menu.addAction(act_delete); menu.addSeparator(); menu.addAction(act_shift_sel); menu.addAction(act_shift_all); menu.addSeparator()
         menu.addAction(act_find_offsets); menu.addAction(act_find_offsets_range); menu.addSeparator(); menu.addAction(act_export)
+        menu.addSeparator(); menu.addAction(act_preview)
 
         act_play.triggered.connect(self.synctable_play_selected)
         act_jump.triggered.connect(self.synctable_jump_to_selected)
@@ -241,6 +316,7 @@ class MainWindow(QWidget):
         act_find_offsets.triggered.connect(self.find_offsets_for_selected)
         act_find_offsets_range.triggered.connect(self.find_offsets_for_selected_in_range)
         act_export.triggered.connect(self.export_synctable_as_srt)
+        act_preview.triggered.connect(self._update_preview_images_from_selection)
 
         menu.exec_(self.synctable.viewport().mapToGlobal(pos))
 
@@ -249,9 +325,11 @@ class MainWindow(QWidget):
         menu = QMenu(self)
         act_play = QAction("Play", self)
         act_jump = QAction("Jump to", self)
-        menu.addAction(act_play); menu.addAction(act_jump)
+        act_preview = QAction("Show preview images", self)
+        menu.addAction(act_play); menu.addAction(act_jump); menu.addSeparator(); menu.addAction(act_preview)
         act_play.triggered.connect(self.referencetable_play_selected)
         act_jump.triggered.connect(self.referencetable_jump_to_selected)
+        act_preview.triggered.connect(self._update_preview_images_from_selection)
         menu.exec_(self.referencetable.viewport().mapToGlobal(pos))
 
     def edit_selected_subtitle(self):
@@ -271,6 +349,9 @@ class MainWindow(QWidget):
             return
         s_item.setText(new_start); e_item.setText(new_end); t_item.setText(new_text)
         self.plot2.set_subtitle_intervals(self._collect_synctable_intervals())
+        # If preview window is open, refresh images to reflect edited times
+        if self._preview_win and self._preview_win.isVisible():
+            self._update_preview_images_from_selection()
 
     # ---------- Playback (table rows) ----------
     def referencetable_play_selected(self):
@@ -494,6 +575,9 @@ class MainWindow(QWidget):
             e_item.setText(self._format_seconds_to_time(e))
         self._mark_rows_shifted(target, all_mode=not selected_only)
         self.plot2.set_subtitle_intervals(self._collect_synctable_intervals())
+        # If preview window is open, refresh images to reflect shifted times
+        if self._preview_win and self._preview_win.isVisible():
+            self._update_preview_images_from_selection()
 
     def _mark_rows_shifted(self, rows: List[int], all_mode: bool):
         """Color shifted rows to visually distinguish edits.
@@ -1005,3 +1089,84 @@ class MainWindow(QWidget):
                 self.audio_output.stop()
             except Exception:
                 pass
+    
+    def closeEvent(self, event):
+        """Ensure all background threads and audio are stopped before exit."""
+        # Stop plot-local playback
+        try:
+            self.plot1.stop_playback_external()
+        except Exception:
+            pass
+        try:
+            self.plot2.stop_playback_external()
+        except Exception:
+            pass
+
+        # Stop table row preview audio
+        try:
+            if self.audio_output:
+                self.audio_output.stop()
+                self.audio_output.deleteLater()
+                self.audio_output = None
+        except Exception:
+            pass
+        try:
+            if self.audio_buffer:
+                self.audio_buffer.close()
+                self.audio_buffer.deleteLater()
+                self.audio_buffer = None
+        except Exception:
+            pass
+
+        # Stop analysis worker/thread
+        try:
+            if self._analyze_worker:
+                try:
+                    self._analyze_worker.abort()
+                except Exception:
+                    pass
+            if self._analyze_thread:
+                self._analyze_thread.quit()
+                self._analyze_thread.wait(1500)
+        except Exception:
+            pass
+        finally:
+            self._analyze_worker = None
+            self._analyze_thread = None
+
+        # Stop offset worker/thread
+        try:
+            if self._offset_worker:
+                try:
+                    self._offset_worker.abort()
+                except Exception:
+                    pass
+            if self._offset_thread:
+                self._offset_thread.quit()
+                self._offset_thread.wait(1500)
+        except Exception:
+            pass
+        finally:
+            self._offset_worker = None
+            self._offset_thread = None
+
+        # Close preview window (cancels its threads in its closeEvent)
+        try:
+            if self._preview_win and self._preview_win.isVisible():
+                self._preview_win.close()
+        except Exception:
+            pass
+
+        # Dismiss busy dialogs
+        try:
+            if self._busy_dialog:
+                self._busy_dialog.finish()
+        except Exception:
+            pass
+        try:
+            if self._busy_offset:
+                self._busy_offset.finish()
+        except Exception:
+            pass
+
+        super().closeEvent(event)

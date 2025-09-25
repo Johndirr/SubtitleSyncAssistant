@@ -26,6 +26,7 @@ ssa/
 |-- ui/
 |   |-- dialogs.py
 |   |-- plot_widget.py
+|   |-- preview.py
 |   `-- __init__.py
 |-- workers/
 |   |-- analyze.py
@@ -50,6 +51,7 @@ ssa/
     - Displays two waveform viewers (`MatplotlibPlotWidget`) with subtitle overlays.
     - Provides a pair of tables (reference vs sync) with row selection, editing, shifting, and export to SRT.
     - Integrates offset search via workers in `ssa.workers.offset`.
+    - Integrates a Preview Images tool window (see `ssa.ui.preview.PreviewImagesWindow`) accessible via table context menus.
   - Also handles lightweight, local audio playback of selected table row intervals (using `QAudioOutput`).
 
 ### ssa/ui/
@@ -67,6 +69,17 @@ ssa/
     - `BusyDialog`: modal, indeterminate progress with optional cancel.
     - `RangeSelectDialog`: input for selecting a start/end range in seconds.
     - `EditSubtitleDialog`: editor for one subtitle row (start, end, text) with validation.
+- preview.py
+  - `PreviewImagesWindow`: a small, floating tool window that shows two images side-by-side (Reference | New) taken from the loaded media files at specific timestamps.
+  - Behavior:
+    - Activated from both tables via context menu entry "Show preview images".
+    - Images correspond to the start time of the selected row in each table.
+    - Auto-updates when selection changes, after editing a row, or after shifting times.
+    - Extracts a single frame using `ffmpeg` in a background `QThread` to keep the UI responsive.
+    - Frames are cached per (file, time) in 0.5 s buckets to limit repeated extraction.
+    - Scales images to fit the window; resizes dynamically on window resize.
+    - Provides graceful fallbacks: "(loading...)", "(no image)", or "(preview unavailable)".
+    - Cleans up background workers on window close to avoid shutdown warnings.
 
 ### ssa/workers/
 
@@ -111,14 +124,19 @@ ssa/
    - Attaches full audio segments for playback (`set_audio_segment`).
    - Populates both tables (reference and sync) with the subtitle lines.
 5. Selection in a table highlights corresponding intervals on the respective plot.
-6. Playback:
+6. Preview Images window:
+   - Right-click a table and choose "Show preview images" to open.
+   - Shows frames from A (Reference) and B (New) at the start times of the selected rows (one per table).
+   - Updates automatically when selection changes, and also after editing a line or shifting times.
+   - Frames are fetched with ffmpeg in background threads and cached per 0.5 s bucket.
+7. Playback:
    - The plots handle their own play/pause and draw the playhead while streaming audio through `QAudioOutput` with a `QBuffer` (16-bit PCM).
    - Only one plot plays at a time; they notify each other via `playingChanged`.
-7. Offset finding (optional):
+8. Offset finding (optional):
    - From the sync table, selected rows trigger either `OffsetWorker` or `SlidingOffsetWorker`.
    - Workers resample snippets if needed, call `find_offset_between_buffers`, and compute a per-row delta so start/end times can be adjusted.
    - Results are written to the "Found offset" column with status coloring.
-8. Editing & Export:
+9. Editing & Export:
    - A single row can be edited via `EditSubtitleDialog`.
    - Times can be shifted (selected rows or all rows) and visually marked.
    - Export writes a validated SRT with consecutive indices using `pysrt`.
@@ -128,11 +146,12 @@ ssa/
 - Display waveform arrays are numpy `float32`, mono or single-channel view (multi-channel averaged to mono).
 - Time is expressed in seconds for processing and in `HH:MM:SS,mmm` for UI and export.
 - For Qt audio playback, raw PCM bytes (16-bit, signed little-endian) are pushed to `QAudioOutput` using `QBuffer`.
+- Preview frames are `QPixmap` objects cached by `(file_path, bucketed_time)`.
 
 ## Dependencies and Runtime Assumptions
 
 - Python 3.10+ recommended.
-- ffmpeg must be available on PATH for pydub to decode media.
+- ffmpeg must be available on PATH for pydub to decode media and for preview frame extraction.
 - `audio-offset-finder` is required for offset search features; the app remains usable without it.
 
 ## Extending the Application
@@ -141,6 +160,7 @@ ssa/
 - Add new workers in `ssa/workers/` to keep the UI responsive for heavy tasks.
 - Extend UI with new dialogs in `ssa/ui/` and wire actions in `MainWindow`.
 - Reuse `MatplotlibPlotWidget` for additional waveform views; it is self-contained and signals playback state.
+- `PreviewImagesWindow` can be reused to show comparisons at arbitrary timestamps; it exposes `show_for_selection()` and `update_images()`.
 - Keep business logic in services/workers and leave `MainWindow` to orchestrate UI.
 
 ## Coding Notes
@@ -148,3 +168,4 @@ ssa/
 - Modules include docstrings and inline comments to aid maintainability.
 - Headers include SPDX and GPL notice to keep licensing clear.
 - Avoid long blocking operations on the UI thread - prefer `QThread` workers.
+- The preview window cancels and joins its threads on close; `MainWindow.closeEvent` also shuts down background work to avoid interpreter shutdown warnings.

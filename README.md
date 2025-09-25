@@ -2,11 +2,12 @@
 
 ![Application Screenshot](Images/Screenshot.jpg)
 
-A small PyQt5 desktop tool to realign subtitle (`.srt`) files against a “reference” and a “new” media file by visual inspection and automatic audio offset detection.
+A small PyQt5 desktop tool to realign/synchronize subtitle (`.srt`) files against a “reference” and a “new” media file by visual inspection and automatic audio offset detection.
 
 ## Purpose
 
-Load one reference media file, one new media file, and an existing subtitle file; inspect both waveforms with subtitle bands; measure per?line offsets using audio correlation; adjust timings (edit or shift); export a corrected SRT.
+Making the process of synchronizing subtitles easier and faster.
+For example: You have a video file with worse image quality but with subtitles and another video file with better image quality but no subtitles. You want to use the subtitles from the first video with the second video. However, the timings are slightly off (e.g. due to different intro/outro lengths or cuts). This tool helps you to quickly find and fix these timing issues.
 
 ## Personal Note
 
@@ -21,16 +22,17 @@ PPS: Thank you to the BBC for their excellent audio-offset-finder
 
 - Dual waveform display (reference vs new) with subtitle interval highlighting
 - Audio playback and jump-to navigation
-- Edit individual subtitle line (start, end, text) with validation
+- Edit individual subtitle line (start, end, text)
 - Shift times (selected or all) with visual highlight of modified rows
-- Automatic offset detection using BBC audio offset finder
-- Range and sliding-window modes for multi-line offset searches
-- Export adjusted sync table to SRT
 - Color coding of subtitle lines (unmodified, modified) with the following scheme:
   - White: unmodified
   - Yellow: modified (edit or shift)
   - Orange: offset detected
   - Red: invalid (end before start, empty text)
+- Automatic offset detection using BBC audio offset finder
+	- Range and sliding-window modes for multi-line offset searches
+- Preview images window that shows frames from both media files at the selected subtitle line times to help visually verify correct alignment
+- SRT file Export
 
 For a developer-oriented overview of the package layout and how modules interact, see README_STRUCTURE.md.
 
@@ -74,8 +76,8 @@ From the project root (where `subtitle_sync_assistant.py` resides): `python subt
 ## Typical Workflow
 
 1. Load reference media, new media, and the original subtitle.
-2. Click "“"Analyze..."”" to populate waveform plots and tables.
-3. (Optional) Select lines and run offset detection ("“"Find Offset(s)"”" or range/sliding variant).
+2. Click "Analyze..." to populate waveform plots and tables.
+3. (Optional) Select lines and run offset detection ("Find Offset(s)" or range/sliding variant).
 4. Shift or edit lines as required.
 5. Export the synchronized subtitle via the sync table context menu.
 

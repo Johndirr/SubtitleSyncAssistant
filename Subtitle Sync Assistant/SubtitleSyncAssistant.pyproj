@@ -30,6 +30,7 @@
     <Compile Include="ssa\services\__init__.py" />
     <Compile Include="ssa\ui\dialogs.py" />
     <Compile Include="ssa\ui\plot_widget.py" />
+    <Compile Include="ssa\ui\preview.py" />
     <Compile Include="ssa\ui\__init__.py" />
     <Compile Include="ssa\utils\timecodes.py" />
     <Compile Include="ssa\workers\analyze.py" />
