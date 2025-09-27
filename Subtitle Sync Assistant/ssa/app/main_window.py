@@ -465,66 +465,62 @@ class MainWindow(QWidget):
             intervals.append((s, e))
         return intervals
 
+    def _collect_referencetable_intervals(self) -> List[Tuple[float, float]]:
+        """Return [(start_sec, end_sec)] for all rows in the reference table."""
+        intervals = []
+        for r in range(self.referencetable.rowCount()):
+            s_item = self.referencetable.item(r, 0)
+            e_item = self.referencetable.item(r, 1)
+            if not s_item or not e_item:
+                continue
+            s = self._parse_time_to_seconds(s_item.text())
+            e = self._parse_time_to_seconds(e_item.text())
+            intervals.append((s, e))
+        return intervals
+
     def synctable_delete_selected(self):
-        """Delete selected rows from the sync table (optimized for many rows)."""
+        """Delete selected rows in the sync table and mirror deletion in reference."""
         selected = self.synctable.selectionModel().selectedRows()
         if not selected:
             return
-        table = self.synctable
+
         rows_to_delete = sorted({idx.row() for idx in selected})
-        total_rows = table.rowCount()
         if not rows_to_delete:
             return
-        # Heuristic: rebuild table content if deleting many rows is cheaper
-        REBUILD_THRESHOLD = 0.15
-        rebuild = (len(rows_to_delete) / max(1, total_rows)) > REBUILD_THRESHOLD
-        table.setSortingEnabled(False); table.blockSignals(True)
-        if table.selectionModel():
-            table.selectionModel().blockSignals(True)
-        table.setUpdatesEnabled(False)
-        try:
-            if rebuild:
-                delete_set = set(rows_to_delete)
-                keep_rows = [r for r in range(total_rows) if r not in delete_set]
-                col_count = table.columnCount()
-                cached_rows = []
-                for r in keep_rows:
-                    row_items = []
-                    for c in range(col_count):
-                        old = table.item(r, c)
-                        if old is None:
-                            row_items.append(None)
-                        else:
-                            # Copy QTableWidgetItem (text + background)
-                            ni = QTableWidgetItem(old)
-                            ni.setBackground(old.background())
-                            row_items.append(ni)
-                    cached_rows.append(row_items)
-                table.clearContents(); table.setRowCount(len(cached_rows))
-                for new_r, row_items in enumerate(cached_rows):
-                    for c, itm in enumerate(row_items):
-                        if itm:
-                            table.setItem(new_r, c, itm)
-            else:
-                for r in reversed(rows_to_delete):
-                    table.removeRow(r)
-            # Re-apply alternating row backgrounds without overwriting user marks
-            for r in range(table.rowCount()):
-                bg = QColor(245, 245, 245) if r % 2 == 0 else QColor(230, 230, 230)
-                for c in range(table.columnCount()):
-                    itm = table.item(r, c)
-                    if itm:
-                        current = itm.background().color()
-                        if current in (QColor(245, 245, 245), QColor(230, 230, 230)):
-                            itm.setBackground(bg)
-        finally:
-            table.setUpdatesEnabled(True)
-            if table.selectionModel():
-                table.selectionModel().blockSignals(False)
-            table.blockSignals(False)
-            table.viewport().update()
+
+        # Delete in both tables using the same row indices (keeps them aligned)
+        self._delete_rows_from_table(self.synctable, rows_to_delete)
+        self._delete_rows_from_table(self.referencetable, rows_to_delete)
+
+        # Refresh plots based on current table contents
         self.plot2.set_subtitle_intervals(self._collect_synctable_intervals())
         self.plot2.set_selected_subtitle_indices([])
+
+        self.plot1.set_subtitle_intervals(self._collect_referencetable_intervals())
+        self.plot1.set_selected_subtitle_indices([])
+
+        # Keep text alignment consistent
+        self.align_table_columns_left(self.referencetable)
+        self.align_table_columns_left(self.synctable)
+
+    def _delete_rows_from_table(self, table: QTableWidget, rows: List[int]):
+        """Delete specified rows from the table, adjusting selection and keeping headers."""
+        if not rows:
+            return
+        table.setSortingEnabled(False)
+        # Adjust selection to avoid removing entire rows in selection
+        sel_model = table.selectionModel()
+        if sel_model and sel_model.hasSelection():
+            new_sel = [idx.row() for idx in sel_model.selectedRows() if idx.row() not in rows]
+            table.clearSelection()
+            for r in new_sel:
+                table.selectRow(r)
+        # Delete rows in reverse order to not mess up row indices
+        for r in reversed(rows):
+            if 0 <= r < table.rowCount():
+                table.removeRow(r)
+        table.setSortingEnabled(True)
+        table.sortByColumn(0, Qt.AscendingOrder)
 
     def shift_times(self, selected_only: bool):
         """Shift start/end times for selected or all rows by user-provided delta."""
