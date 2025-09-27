@@ -310,13 +310,14 @@ class MainWindow(QWidget):
         act_delete = QAction("Delete line(s)", self)
         act_shift_sel = QAction("Shift times for selected line(s)", self)
         act_shift_all = QAction("Shift all times", self)
+        act_undo_shift = QAction("Undo shift for selected line(s)", self)
         act_find_offsets = QAction("Find Offset(s) (BBC-offset-finder)", self)
         act_find_offsets_range = QAction("Find Offset(s) in range (BBC-offset-finder)", self)
         act_export = QAction("Export subtitle", self)
         act_preview = QAction("Show preview images", self)
 
         menu.addAction(act_play); menu.addAction(act_jump); menu.addAction(act_edit); menu.addSeparator()
-        menu.addAction(act_delete); menu.addSeparator(); menu.addAction(act_shift_sel); menu.addAction(act_shift_all); menu.addSeparator()
+        menu.addAction(act_delete); menu.addSeparator(); menu.addAction(act_shift_sel); menu.addAction(act_shift_all); menu.addAction(act_undo_shift); menu.addSeparator()
         menu.addAction(act_find_offsets); menu.addAction(act_find_offsets_range); menu.addSeparator(); menu.addAction(act_export)
         menu.addSeparator(); menu.addAction(act_preview)
 
@@ -326,6 +327,7 @@ class MainWindow(QWidget):
         act_delete.triggered.connect(self.synctable_delete_selected)
         act_shift_sel.triggered.connect(lambda: self.shift_times(selected_only=True))
         act_shift_all.triggered.connect(lambda: self.shift_times(selected_only=False))
+        act_undo_shift.triggered.connect(self.undo_total_shift_for_selected)
         act_find_offsets.triggered.connect(self.find_offsets_for_selected)
         act_find_offsets_range.triggered.connect(self.find_offsets_for_selected_in_range)
         act_export.triggered.connect(self.export_synctable_as_srt)
@@ -621,6 +623,54 @@ class MainWindow(QWidget):
         if self._preview_win and self._preview_win.isVisible():
             self._update_preview_images_from_selection()
 
+    def undo_total_shift_for_selected(self):
+        """Undo cumulative shifts for selected rows using the 'Total shift' column."""
+        sel = self.synctable.selectionModel().selectedRows()
+        if not sel:
+            return
+
+        any_changed = False
+        for idx in sel:
+            r = idx.row()
+            s_item = self.synctable.item(r, 0)
+            e_item = self.synctable.item(r, 1)
+            ts_item = self.synctable.item(r, 4)  # "Total shift"
+            if not (s_item and e_item and ts_item):
+                continue
+
+            # Parse cumulative shift; skip when zero/invalid
+            try:
+                total_shift = float(ts_item.text().replace(",", "."))
+            except Exception:
+                total_shift = 0.0
+            if abs(total_shift) < 1e-9:
+                continue
+
+            # Apply inverse shift to start/end
+            delta = -total_shift
+            s = max(0.0, self._parse_time_to_seconds(s_item.text()) + delta)
+            e = max(s, self._parse_time_to_seconds(e_item.text()) + delta)
+            s_item.setText(self._format_seconds_to_time(s))
+            e_item.setText(self._format_seconds_to_time(e))
+
+            # Reset cumulative shift
+            ts_item.setText("+0.000")
+
+            # Restore alternating background for the row
+            bg = QColor(245, 245, 245) if r % 2 == 0 else QColor(230, 230, 230)
+            for c in range(self.synctable.columnCount()):
+                itm = self.synctable.item(r, c)
+                if itm:
+                    itm.setBackground(bg)
+
+            any_changed = True
+
+        if any_changed:
+            # Refresh plot and preview (if open)
+            self.plot2.set_subtitle_intervals(self._collect_synctable_intervals())
+            if self._preview_win and self._preview_win.isVisible():
+                self._update_preview_images_from_selection()
+
     def _mark_rows_shifted(self, rows: List[int], all_mode: bool):
         """Color shifted rows to visually distinguish edits.
 
@@ -802,8 +852,7 @@ class MainWindow(QWidget):
         for i, r in enumerate(rows):
             self.referencetable.setItem(i, 0, QTableWidgetItem(fmt(r["start"]))); self.referencetable.setItem(i, 1, QTableWidgetItem(fmt(r["end"]))); self.referencetable.setItem(i, 2, QTableWidgetItem(r["text"]))
             self.synctable.setItem(i, 0, QTableWidgetItem(fmt(r["start"]))); self.synctable.setItem(i, 1, QTableWidgetItem(fmt(r["end"]))); self.synctable.setItem(i, 2, QTableWidgetItem(r["text"]))
-            self.synctable.setItem(i, 3, QTableWidgetItem(""))
-            self.synctable.setItem(i, 4, QTableWidgetItem("+0.000"))
+            self.synctable.setItem(i, 3, QTableWidgetItem("")); self.synctable.setItem(i, 4, QTableWidgetItem("+0.000"))
             bg = QColor(245, 245, 245) if i % 2 == 0 else QColor(230, 230, 230)
             for c in range(3):
                 self.referencetable.item(i, c).setBackground(bg)
