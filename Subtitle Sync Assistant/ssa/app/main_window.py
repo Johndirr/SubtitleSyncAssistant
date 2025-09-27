@@ -166,17 +166,30 @@ class MainWindow(QWidget):
         self.referencetable.setContextMenuPolicy(Qt.CustomContextMenu)
         self.referencetable.customContextMenuRequested.connect(self.show_referencetable_context_menu)
 
-        self.synctable = QTableWidget(0, 4)
-        self.synctable.setHorizontalHeaderLabels(["Start time", "End time", "Text", "Found offset"])
-        self._init_table_column_sizing(self.synctable, [0, 1, 3], [2])
+        self.synctable = QTableWidget(0, 5)
+        self.synctable.setHorizontalHeaderLabels(["Start time", "End time", "Text", "Found offset", "Total shift"])
+        self._init_table_column_sizing(self.synctable, [0, 1, 3, 4], [2])
+        # Header tooltip for "Total shift"
+        hdrTotalshift = self.synctable.horizontalHeaderItem(4)
+        if hdrTotalshift:
+            hdrTotalshift.setToolTip(
+                "Cumulative time shift that was applied to a line."
+            )
+        hdrFoundOffset = self.synctable.horizontalHeaderItem(3)
+        if hdrFoundOffset:
+            hdrFoundOffset.setToolTip(
+                "Offset that was found when searching for a line in the new media. "
+                "BBC-offset-finder will always find a match, which may be incorrect."
+            )
         self.synctable.setMinimumHeight(300)
         self.synctable.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.synctable.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.synctable.setContextMenuPolicy(Qt.CustomContextMenu)
         self.synctable.customContextMenuRequested.connect(self.show_synctable_context_menu)
 
-        tables_row.addWidget(self.referencetable)
-        tables_row.addWidget(self.synctable)
+        # Add tables to layout with stretch factors (7:10)
+        tables_row.addWidget(self.referencetable, 7)
+        tables_row.addWidget(self.synctable, 10)
         tables_row.setContentsMargins(0, 0, 0, 0)
         tables_container = QWidget(); tables_container.setLayout(tables_row); tables_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         main_layout.addWidget(tables_container)
@@ -347,7 +360,28 @@ class MainWindow(QWidget):
         new_start, new_end, new_text, ok = EditSubtitleDialog.edit(self, start_orig, end_orig, text_orig)
         if not ok:
             return
+
+        # Compute start-time delta to accumulate into "Total shift" (col 4)
+        old_start_sec = self._parse_time_to_seconds(start_orig)
+        new_start_sec = self._parse_time_to_seconds(new_start)
+        delta = new_start_sec - old_start_sec
+
+        # Apply edits
         s_item.setText(new_start); e_item.setText(new_end); t_item.setText(new_text)
+
+        # Update cumulative Total shift
+        ts_item = self.synctable.item(row, 4)
+        if ts_item is None:
+            ts_item = QTableWidgetItem("+0.000")
+            self.synctable.setItem(row, 4, ts_item)
+        try:
+            current_total = float(ts_item.text().replace(",", "."))
+        except ValueError:
+            current_total = 0.0
+        ts_item.setText(f"{(current_total + delta):+.3f}")
+
+        # Visual + plot refresh
+        self._mark_rows_shifted([row], all_mode=False)
         self.plot2.set_subtitle_intervals(self._collect_synctable_intervals())
         # If preview window is open, refresh images to reflect edited times
         if self._preview_win and self._preview_win.isVisible():
@@ -569,6 +603,18 @@ class MainWindow(QWidget):
             s = max(0.0, s); e = max(s, e)
             s_item.setText(self._format_seconds_to_time(s))
             e_item.setText(self._format_seconds_to_time(e))
+
+            # Update cumulative shift column (index 4)
+            ts_item = self.synctable.item(r, 4)
+            if ts_item is None:
+                ts_item = QTableWidgetItem("+0.000")
+                self.synctable.setItem(r, 4, ts_item)
+            try:
+                current = float(ts_item.text().replace(",", "."))
+            except ValueError:
+                current = 0.0
+            new_total = current + delta
+            ts_item.setText(f"{new_total:+.3f}")
         self._mark_rows_shifted(target, all_mode=not selected_only)
         self.plot2.set_subtitle_intervals(self._collect_synctable_intervals())
         # If preview window is open, refresh images to reflect shifted times
@@ -757,10 +803,11 @@ class MainWindow(QWidget):
             self.referencetable.setItem(i, 0, QTableWidgetItem(fmt(r["start"]))); self.referencetable.setItem(i, 1, QTableWidgetItem(fmt(r["end"]))); self.referencetable.setItem(i, 2, QTableWidgetItem(r["text"]))
             self.synctable.setItem(i, 0, QTableWidgetItem(fmt(r["start"]))); self.synctable.setItem(i, 1, QTableWidgetItem(fmt(r["end"]))); self.synctable.setItem(i, 2, QTableWidgetItem(r["text"]))
             self.synctable.setItem(i, 3, QTableWidgetItem(""))
+            self.synctable.setItem(i, 4, QTableWidgetItem("+0.000"))
             bg = QColor(245, 245, 245) if i % 2 == 0 else QColor(230, 230, 230)
             for c in range(3):
                 self.referencetable.item(i, c).setBackground(bg)
-            for c in range(4):
+            for c in range(5):
                 self.synctable.item(i, c).setBackground(bg)
         self.align_table_columns_left(self.referencetable); self.align_table_columns_left(self.synctable)
         self.plot1.set_subtitle_intervals(result["intervals"]); self.plot2.set_subtitle_intervals(result["intervals"])
