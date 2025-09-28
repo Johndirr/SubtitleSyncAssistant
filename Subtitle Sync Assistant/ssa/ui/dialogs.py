@@ -39,6 +39,8 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QLineEdit,
     QTextEdit,
+    QPushButton,
+    QStyle,
 )
 
 
@@ -115,6 +117,8 @@ class RangeSelectDialog(QDialog):
         than the suggested defaults.
         """
         super().__init__(parent)
+        # Remove "?" help button from the title bar for a cleaner look
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
         self.setWindowTitle("Reference Range")
         self.setModal(True)
         self.setMinimumWidth(360)
@@ -125,12 +129,37 @@ class RangeSelectDialog(QDialog):
 
         layout = QVBoxLayout(self)
 
+        # Short inline help with tooltip explaining input and search behavior
+        help_text = (
+            "Enter a time range in the NEW media timeline.\n"
+            "- Start and End are in HH:MM:SS (no milliseconds).\n"
+            "- Window length L = End - Start.\n"
+            "- For a single selection, the reference line is searched within [Start, End] in NEW audio.\n"
+            "- For multiple selections, each next line is searched in NEW audio within "
+            "[start time of the previous selected line, previous start + L] (sliding window).\n"
+            "- The algorithm correlates each REFERENCE snippet against the slice of the NEW audio."
+        )
+        help_row = QHBoxLayout()
+        info_btn = QPushButton(self)
+        info_btn.setFlat(True)
+        info_btn.setIcon(self.style().standardIcon(QStyle.SP_MessageBoxInformation))
+        info_btn.setToolTip(help_text)
+        info_lbl = QLabel("What is this range?", self)
+        info_lbl.setStyleSheet("color: #666666;")
+        info_lbl.setToolTip(help_text)
+        help_row.addWidget(info_btn)
+        help_row.addWidget(info_lbl)
+        help_row.addStretch()
+        layout.addLayout(help_row)
+
         # Start time row
         start_row = QHBoxLayout()
-        start_row.addWidget(QLabel("Start (HH:MM:SS):"))
-        self.start_h = QSpinBox(); self.start_h.setRange(0, 999); self.start_h.setValue(sh)
-        self.start_m = QSpinBox(); self.start_m.setRange(0, 59);  self.start_m.setValue(sm)
-        self.start_s = QSpinBox(); self.start_s.setRange(0, 59);  self.start_s.setValue(ss)
+        start_label = QLabel("Start (HH:MM:SS):")
+        start_label.setToolTip(help_text)
+        start_row.addWidget(start_label)
+        self.start_h = QSpinBox(); self.start_h.setRange(0, 999); self.start_h.setValue(sh); self.start_h.setToolTip(help_text)
+        self.start_m = QSpinBox(); self.start_m.setRange(0, 59);  self.start_m.setValue(sm); self.start_m.setToolTip(help_text)
+        self.start_s = QSpinBox(); self.start_s.setRange(0, 59);  self.start_s.setValue(ss); self.start_s.setToolTip(help_text)
         for w in (self.start_h, self.start_m, self.start_s):
             w.setFixedWidth(60)
         start_row.addWidget(self.start_h)
@@ -143,10 +172,12 @@ class RangeSelectDialog(QDialog):
 
         # End time row
         end_row = QHBoxLayout()
-        end_row.addWidget(QLabel("End (HH:MM:SS):"))
-        self.end_h = QSpinBox(); self.end_h.setRange(0, 999); self.end_h.setValue(eh)
-        self.end_m = QSpinBox(); self.end_m.setRange(0, 59);  self.end_m.setValue(em)
-        self.end_s = QSpinBox(); self.end_s.setRange(0, 59);  self.end_s.setValue(es)
+        end_label = QLabel("End (HH:MM:SS):")
+        end_label.setToolTip(help_text)
+        end_row.addWidget(end_label)
+        self.end_h = QSpinBox(); self.end_h.setRange(0, 999); self.end_h.setValue(eh); self.end_h.setToolTip(help_text)
+        self.end_m = QSpinBox(); self.end_m.setRange(0, 59);  self.end_m.setValue(em); self.end_m.setToolTip(help_text)
+        self.end_s = QSpinBox(); self.end_s.setRange(0, 59);  self.end_s.setValue(es); self.end_s.setToolTip(help_text)
         for w in (self.end_h, self.end_m, self.end_s):
             w.setFixedWidth(60)
         end_row.addWidget(self.end_h)
