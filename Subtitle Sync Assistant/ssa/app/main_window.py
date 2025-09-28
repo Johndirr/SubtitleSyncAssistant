@@ -1020,11 +1020,13 @@ class MainWindow(QWidget):
         thread.start()
 
     def find_offsets_for_selected_in_range(self):
-        """Compute offsets by matching reference lines inside the NEW audio using a per-line NEW sliding window.
+        """Compute offsets by matching reference lines inside the NEW audio.
 
-        Single selection: search in NEW slice [user range].
-        Multiple selection: for each subsequent selected line, search in NEW slice
-        [start time of the previous selected line, start time + user range length].
+        New behavior:
+        - Ask the user for a single search range LENGTH in minutes (floats allowed).
+        - For each selected line, use the exact REFERENCE snippet [ref_s, ref_e].
+        - Build the NEW search slice as [ref_s - L_sec, ref_e + L_sec], clamped to NEW duration.
+        - Search the reference snippet inside that per-line NEW slice.
         """
         if self.synctable.rowCount() == 0:
             QMessageBox.information(self, "Offset Finder", "No rows available.")
@@ -1039,12 +1041,9 @@ class MainWindow(QWidget):
             QMessageBox.information(self, "Offset Finder", "Offset computation already running.")
             return
 
-        # Build rows (reference times) and propose defaults from NEW times
-        # Use ascending table row order for sliding progression
+        # Gather selected rows in ascending order and collect their REFERENCE times
         indices = sorted([i.row() for i in sel])
         rows: List[Tuple[int, float, float]] = []
-        earliest_new = float('inf')
-        latest_new = 0.0
         for r in indices:
             rs_item = self.referencetable.item(r, 0)
             re_item = self.referencetable.item(r, 1)
@@ -1053,15 +1052,6 @@ class MainWindow(QWidget):
             ref_s = self._parse_time_to_seconds(rs_item.text())
             ref_e = self._parse_time_to_seconds(re_item.text())
             rows.append((r, ref_s, ref_e))
-
-            ns_item = self.synctable.item(r, 0)
-            ne_item = self.synctable.item(r, 1)
-            if ns_item and ne_item:
-                new_s = self._parse_time_to_seconds(ns_item.text())
-                new_e = self._parse_time_to_seconds(ne_item.text())
-                earliest_new = min(earliest_new, new_s)
-                latest_new = max(latest_new, new_e)
-
         if not rows:
             QMessageBox.information(self, "Offset Finder", "Selected rows have no valid times.")
             return
@@ -1069,42 +1059,34 @@ class MainWindow(QWidget):
             QMessageBox.warning(self, "Offset Finder", "New audio not loaded.")
             return
 
-        # Pick NEW search range once; length defines the sliding window
+        # Ask for range length (minutes -> seconds)
+        val_str, ok = QInputDialog.getText(
+            self,
+            "Search Range",
+            "Enter search range length in minutes (e.g. 0.5, 1.5):",
+            text="1.0",
+        )
+        if not ok or not val_str.strip():
+            return
+        try:
+            minutes = float(val_str.replace(",", "."))
+        except ValueError:
+            QMessageBox.warning(self, "Search Range", "Invalid number.")
+            return
+        if minutes <= 0:
+            QMessageBox.warning(self, "Search Range", "Range must be greater than 0.")
+            return
+        L_sec = minutes * 60.0
+
         new_total_sec = len(self.new_audio_segment) / 1000.0
-        pad = 5.0
-        if earliest_new == float('inf'):
-            earliest_new = 0.0
-            latest_new = min(10.0, new_total_sec)
-        default_start = max(0.0, earliest_new - pad)
-        default_end = min(new_total_sec, latest_new + pad)
-        search_start, search_end, ok = RangeSelectDialog.get_range(self, default_start, default_end)
-        if not ok:
-            return
-        if search_start < 0 or search_end > new_total_sec:
-            QMessageBox.warning(self, "Search Range", "Range outside NEW audio duration.")
-            return
-        window_len = search_end - search_start
-        if window_len <= 0:
-            QMessageBox.warning(self, "Search Range", "Invalid range length.")
-            return
 
-        # Build per-line NEW slice starts:
-        # - first line uses [search_start, search_start + window_len]
-        # - subsequent line i uses [start(prev_selected_line), start(prev)+window_len] in NEW timeline
-        new_slice_starts: List[float] = []
-        for idx, (row_idx, _rs, _re) in enumerate(rows):
-            if idx == 0:
-                new_slice_starts.append(search_start)
-            else:
-                prev_row = rows[idx - 1][0]
-                ns_prev = self.synctable.item(prev_row, 0)
-                prev_start_new = self._parse_time_to_seconds(ns_prev.text()) if ns_prev else search_start
-                new_slice_starts.append(max(0.0, min(prev_start_new, new_total_sec)))
-
-        # Queue of tasks (one worker per line) so we can pass a different NEW slice each time
-        tasks = list(zip(rows, new_slice_starts))  # [((row_idx, ref_s, ref_e), new_slice_start), ...]
-
-        self._busy_offset = BusyDialog(self, title="Finding Offsets (Sliding NEW range)", message="Preparing ...", cancellable=True)
+        # Prepare UI
+        self._busy_offset = BusyDialog(
+            self,
+            title="Finding Offsets (± range around reference)",
+            message="Preparing ...",
+            cancellable=True,
+        )
         self._busy_offset.cancel_requested.connect(self.cancel_offset_worker)
         self._busy_offset.show()
 
@@ -1112,40 +1094,50 @@ class MainWindow(QWidget):
         self._offset_worker = None
         cancelled = {"flag": False}
 
+        # Process one line at a time to allow per-line NEW slices
         def run_task(task_index: int):
-            if cancelled["flag"] or task_index >= len(tasks):
+            if cancelled["flag"] or task_index >= len(rows):
                 finish_all()
                 return
 
-            (row_idx, ref_s, ref_e), slice_start = tasks[task_index]
-            slice_end = min(new_total_sec, slice_start + window_len)
+            row_idx, ref_s, ref_e = rows[task_index]
+            slice_start = max(0.0, ref_s - L_sec)
+            slice_end = min(new_total_sec, ref_e + L_sec)
+            if slice_end <= slice_start:
+                update_cell(row_idx, None, "range-too-short")
+                run_task(task_index + 1)
+                return
+
+            # Convert to sample indices and extract NEW slice
             start_i = int(slice_start * self._new_sr_cache)  # type: ignore[operator]
             end_i = min(int(slice_end * self._new_sr_cache), self._new_mono_cache.shape[0])  # type: ignore[operator]
             if end_i - start_i < 100:
-                # Too short; mark as error-like result and continue
                 update_cell(row_idx, None, "range-too-short")
                 run_task(task_index + 1)
                 return
             new_slice = self._new_mono_cache[start_i:end_i]  # type: ignore[index]
 
             if self._busy_offset:
-                self._busy_offset.set_message(f"Line {task_index + 1}/{len(tasks)}: searching {slice_start:.3f}s–{slice_end:.3f}s")
+                self._busy_offset.set_message(
+                    f"Line {task_index + 1}/{len(rows)}: searching {slice_start:.3f}s–{slice_end:.3f}s"
+                )
 
             thread = QThread()
             worker = OffsetWorker(
-                new_slice, self._new_sr_cache,             # search corpus: NEW slice
-                self._ref_mono_cache, self._ref_sr_cache, # snippets: full REFERENCE (rows provide ref times)
-                [(row_idx, ref_s, ref_e)], 1.0, ref_offset_sec=slice_start
+                new_slice, self._new_sr_cache,              # search corpus: NEW slice
+                self._ref_mono_cache, self._ref_sr_cache,   # snippets: full REFERENCE (rows provide ref times)
+                [(row_idx, ref_s, ref_e)], 1.0,             # single row task
+                ref_offset_sec=slice_start                   # offsets relative to NEW slice start
             )  # type: ignore[arg-type]
 
             self._offset_thread = thread
             self._offset_worker = worker
             worker.moveToThread(thread)
 
-            def on_result(r_i: int, delta_val, status: str, _worker=worker, _task=task_index):
+            def on_result(r_i: int, delta_val, status: str, _worker=worker):
                 if _worker is not self._offset_worker:
                     return
-                # Negate for "reference inside NEW" convention
+                # Negate to keep "reference in NEW" UI convention
                 if delta_val is None:
                     update_cell(r_i, None, status)
                 else:
@@ -1155,7 +1147,7 @@ class MainWindow(QWidget):
                 if _worker is not self._offset_worker:
                     return
                 if self._busy_offset:
-                    self._busy_offset.set_message(f"Line {task_index + 1}/{len(tasks)}: {msg}")
+                    self._busy_offset.set_message(f"Line {task_index + 1}/{len(rows)}: {msg}")
 
             def on_finished(_worker=worker):
                 if _worker is not self._offset_worker:
@@ -1215,7 +1207,7 @@ class MainWindow(QWidget):
                 cell.setText(f"{sign}{abs(float(delta_val)):.3f}")
                 cell.setBackground(QColor(210, 245, 210) if status == "ok" else QColor(255, 210, 210))
 
-        # Kick off the first task
+        # Start processing
         run_task(0)
 
     def _finish_offset_worker(self):

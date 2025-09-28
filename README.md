@@ -1,8 +1,8 @@
-# Subtitle Sync Assistant
+Ôªø# Subtitle Sync Assistant
 
 ![Application Screenshot](Images/Screenshot.jpg)
 
-A small PyQt5 desktop tool to realign/synchronize subtitle (`.srt`) files against a ìreferenceî and a ìnewî media file by visual inspection and automatic audio offset detection.
+A small PyQt5 desktop tool to realign/synchronize subtitle (`.srt`) files against a ‚Äúreference‚Äù and a ‚Äúnew‚Äù media file by visual inspection and automatic audio offset detection.
 
 ## Purpose
 
@@ -30,7 +30,8 @@ PPS: Thank you to the BBC for their excellent audio-offset-finder
   - Orange: offset detected
   - Red: invalid (end before start, empty text)
 - Automatic offset detection using BBC audio offset finder
-	- Range and sliding-window modes for multi-line offset searches
+  - Global search: find each reference line within the entire NEW audio.
+  - In-range search: enter a single search length in minutes (e.g., 0.5, 1.5). For each selected line the NEW search slice is [ref_start ‚àí L, ref_end + L] (clamped to media duration), while the reference snippet stays exactly [ref_start, ref_end].
 - Preview images window that shows frames from both media files at the selected subtitle line times to help visually verify correct alignment
 - SRT file Export
 
@@ -94,15 +95,15 @@ This program is free software: you can redistribute it and/or modify it under th
 
 You should have received a copy of the GNU GPL version 3 along with this program. If not, see: https://www.gnu.org/licenses/gpl-3.0.html
 
-Because this application uses PyQt5 (GPL), the combined work must be distributed under GPLv3 (or later) and you may not impose additional restrictions (for example, you cannot make it ìnon?commercial onlyî). Users are free to run, study, modify, and redistribute the program under the GPL terms.
+Because this application uses PyQt5 (GPL), the combined work must be distributed under GPLv3 (or later) and you may not impose additional restrictions (for example, you cannot make it ‚Äúnon?commercial only‚Äù). Users are free to run, study, modify, and redistribute the program under the GPL terms.
 
 ### Third Party Components (summary)
 
-- PyQt5 ñ GPLv3
-- numpy ñ BSD 3-Clause
-- matplotlib ñ Matplotlib (BSD-style) license
-- pydub ñ MIT
-- pysrt ñ LGPLv3
+- PyQt5 ‚Äì GPLv3
+- numpy ‚Äì BSD 3-Clause
+- matplotlib ‚Äì Matplotlib (BSD-style) license
+- pydub ‚Äì MIT
+- pysrt ‚Äì LGPLv3
 - audio-offset-finder - Apache License 2.0
 - ffmpeg - LGPL 2.1+
 
