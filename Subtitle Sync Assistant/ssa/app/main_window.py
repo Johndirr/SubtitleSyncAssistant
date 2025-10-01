@@ -1057,9 +1057,11 @@ class MainWindow(QWidget):
 
         Behavior:
         - Ask the user for a single search range LENGTH in minutes (floats allowed).
-        - For each selected line, use the exact REFERENCE snippet [ref_s, ref_e].
-        - Build the NEW search slice as [ref_s - L_sec, ref_e + L_sec], clamped to NEW duration.
-        - Search the reference snippet inside that per-line NEW slice.
+        - Optional sign handling:
+          +L -> NEW slice [ref_s, ref_e + L]
+          -L -> NEW slice [ref_s - L, ref_e]
+          no sign -> NEW slice [ref_s - L, ref_e + L]
+        - All slices are clamped to NEW audio duration.
         """
         if self.synctable.rowCount() == 0:
             QMessageBox.information(self, "Offset Finder", "No rows available.")
@@ -1093,17 +1095,24 @@ class MainWindow(QWidget):
             QMessageBox.warning(self, "Offset Finder", "New audio not loaded.")
             return
 
-        # Ask for range length (minutes -> seconds)
+        # Ask for range length (minutes -> seconds) with optional leading sign (+/-)
         val_str, ok = QInputDialog.getText(
             self,
             "Search Range",
-            "Enter search range length in minutes (e.g. 0.5, 1.5):",
+            "Enter search range length in minutes (e.g. 0.5, 1.5, +1.0, -0.5):",
             text="1.0",
         )
         if not ok or not val_str.strip():
             return
+
+        raw = val_str.strip().replace(",", ".")
+        sign_char: Optional[str] = None
+        if raw and raw[0] in "+-":
+            sign_char = raw[0]
+            raw = raw[1:].strip()
+
         try:
-            minutes = float(val_str.replace(",", "."))
+            minutes = float(raw)
         except ValueError:
             QMessageBox.warning(self, "Search Range", "Invalid number.")
             return
@@ -1124,11 +1133,13 @@ class MainWindow(QWidget):
             message="Preparing ...",
             cancellable=True,
         )
+
         def _request_cancel():
             cancelled["flag"] = True
             self.cancel_offset_worker()
             if self._busy_offset:
                 self._busy_offset.set_message("Cancelling ...")
+
         self._busy_offset.cancel_requested.connect(_request_cancel)
         self._busy_offset.show()
 
@@ -1141,8 +1152,18 @@ class MainWindow(QWidget):
                 return
 
             row_idx, ref_s, ref_e = rows[task_index]
-            slice_start = max(0.0, ref_s - L_sec)
-            slice_end = min(new_total_sec, ref_e + L_sec)
+
+            # Build NEW slice based on sign: +L, -L or both directions (no sign)
+            if sign_char == "+":
+                slice_start = max(0.0, ref_s)
+                slice_end = min(new_total_sec, ref_e + L_sec)
+            elif sign_char == "-":
+                slice_start = max(0.0, ref_s - L_sec)
+                slice_end = min(new_total_sec, ref_e)
+            else:
+                slice_start = max(0.0, ref_s - L_sec)
+                slice_end = min(new_total_sec, ref_e + L_sec)
+
             if slice_end <= slice_start:
                 update_cell(row_idx, None, "range-too-short")
                 run_task(task_index + 1)
