@@ -897,10 +897,17 @@ class MainWindow(QWidget):
         if not load("new_audio_segment", self.le2):
             return False
 
+        # Ensure caches are already float32 to avoid duplication in workers
         if self._ref_mono_cache is None:
-            self._ref_mono_cache, self._ref_sr_cache = segment_to_float_array(self.ref_audio_segment)  # type: ignore[arg-type]
+            cache, sr = segment_to_float_array(self.ref_audio_segment)  # type: ignore[arg-type]
+            # Pre-convert to float32 to avoid repeated conversions
+            self._ref_mono_cache = cache if cache.dtype == np.float32 else cache.astype(np.float32)
+            self._ref_sr_cache = sr
         if self._new_mono_cache is None:
-            self._new_mono_cache, self._new_sr_cache = segment_to_float_array(self.new_audio_segment)  # type: ignore[arg-type]
+            cache, sr = segment_to_float_array(self.new_audio_segment)  # type: ignore[arg-type]
+            # Pre-convert to float32 to avoid repeated conversions
+            self._new_mono_cache = cache if cache.dtype == np.float32 else cache.astype(np.float32)
+            self._new_sr_cache = sr
         return True
 
     def cancel_offset_worker(self):
@@ -1181,7 +1188,13 @@ class MainWindow(QWidget):
                 finish_all()
                 return
 
+            # Use array view - OffsetWorker will handle conversion if needed
             new_slice = self._new_mono_cache[start_i:end_i]  # type: ignore[index]
+            
+            # Only make contiguous if needed (audio_offset_finder may require it)
+            # This avoids unnecessary copying when the slice is already contiguous
+            if not new_slice.flags['C_CONTIGUOUS']:
+                new_slice = np.ascontiguousarray(new_slice)
 
             if self._busy_offset and not cancelled["flag"]:
                 self._busy_offset.set_message(
@@ -1250,6 +1263,20 @@ class MainWindow(QWidget):
                     if self._offset_thread and not self._offset_thread.isRunning():
                         self._offset_thread = None
                         self._offset_worker = None
+                    
+                    # Explicitly delete worker and thread to release memory
+                    try:
+                        worker.deleteLater()
+                    except Exception:
+                        pass
+                    try:
+                        thread.deleteLater()
+                    except Exception:
+                        pass
+                    
+                    # Force garbage collection to free memory immediately
+                    import gc
+                    gc.collect()
 
             worker.result.connect(on_result)
             worker.progress.connect(on_progress)

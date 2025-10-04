@@ -61,9 +61,10 @@ class OffsetWorker(QObject):
         rows is a list of (row_index, start_sec, end_sec) in "new" timebase.
         """
         super().__init__()
-        self.ref_wave = ref_wave.astype(np.float32)
+        # Avoid unnecessary copying - only convert if not already float32
+        self.ref_wave = ref_wave if ref_wave.dtype == np.float32 else ref_wave.astype(np.float32)
         self.ref_sr = ref_sr
-        self.new_wave = new_wave.astype(np.float32)
+        self.new_wave = new_wave if new_wave.dtype == np.float32 else new_wave.astype(np.float32)
         self.new_sr = new_sr
         self.rows = rows
         self.min_duration = min_duration
@@ -153,7 +154,8 @@ class SlidingOffsetWorker(QObject):
     ):
         """Initialize worker with new wave, rows, and per-row reference windows."""
         super().__init__()
-        self.new_wave = new_wave.astype(np.float32)
+        # Avoid unnecessary copying - only convert if not already float32
+        self.new_wave = new_wave if new_wave.dtype == np.float32 else new_wave.astype(np.float32)
         self.new_sr = new_sr
         self.rows = rows
         self.ref_windows = ref_windows
