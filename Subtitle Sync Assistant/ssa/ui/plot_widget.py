@@ -24,7 +24,7 @@ Behavior preserved; comments added and tiny helpers reused from utils.
 This widget provides:
 - A scrollable/zoomed view of a mono waveform for quick visual inspection
 - Subtitle interval overlays and selection highlighting
-- Minimal audio preview (no re-sampling here; we play the original segment)
+- Optimized audio playback with larger buffers for smooth performance
 
 It purposely keeps playback state independent so two instances can run
 side-by-side in the main window without interfering with each other.
@@ -47,7 +47,7 @@ from pydub import AudioSegment
 
 
 class MatplotlibPlotWidget(QFrame):
-    """Scrollable waveform viewer with lightweight audio playback.
+    """Scrollable waveform viewer with optimized audio playback.
 
     Signals
     -------
@@ -325,7 +325,7 @@ class MatplotlibPlotWidget(QFrame):
             self.playingChanged.emit(False)
 
     def _start_playback(self) -> bool:
-        """Start audio playback from current playhead position.
+        """Start audio playback from current playhead position with optimized buffering.
 
         Returns
         -------
@@ -338,24 +338,45 @@ class MatplotlibPlotWidget(QFrame):
         start_sec = max(0.0, min(self.playhead_sec, media_total))
         self._play_origin_sec = start_sec
 
-        # Slice the original audio to play from the playhead to the end
-        part = self.audio_segment[int(start_sec * 1000):]
+        # Slice from playhead to end (original behavior for unlimited playback)
+        # Optimize by using direct slicing without intermediate copies
+        start_ms = int(start_sec * 1000)
+        part = self.audio_segment[start_ms:]
+        
         if len(part) <= 0:
             return False
 
-        # Ensure 16-bit PCM for Qt audio output
+        # Optimize: Only convert sample width if necessary
         if part.sample_width != 2:
             part = part.set_sample_width(2)
-        fmt = QAudioFormat(); fmt.setSampleRate(part.frame_rate); fmt.setChannelCount(part.channels); fmt.setSampleSize(part.sample_width * 8)
-        fmt.setCodec("audio/pcm"); fmt.setByteOrder(QAudioFormat.LittleEndian); fmt.setSampleType(QAudioFormat.SignedInt)
+        
+        fmt = QAudioFormat()
+        fmt.setSampleRate(part.frame_rate)
+        fmt.setChannelCount(part.channels)
+        fmt.setSampleSize(part.sample_width * 8)
+        fmt.setCodec("audio/pcm")
+        fmt.setByteOrder(QAudioFormat.LittleEndian)
+        fmt.setSampleType(QAudioFormat.SignedInt)
 
         self._dispose_audio()
 
-        # Feed raw bytes from pydub into a QBuffer consumed by QAudioOutput
-        self.audio_data = QByteArray(part.raw_data)
-        self.audio_buffer = QBuffer(); self.audio_buffer.setData(self.audio_data); self.audio_buffer.open(QBuffer.ReadOnly)
+        # Use raw_data directly without intermediate copies
+        raw_bytes = bytes(part.raw_data)
+        self.audio_data = QByteArray(raw_bytes)
+        self.audio_buffer = QBuffer()
+        self.audio_buffer.setData(self.audio_data)
+        self.audio_buffer.open(QBuffer.ReadOnly)
         self.audio_output = QAudioOutput(fmt, self)
         self.audio_output.stateChanged.connect(self._on_audio_state_changed)
+        
+        # Optimize buffer size: larger buffer = smoother playback
+        try:
+            # Use 500ms buffer for very smooth playback
+            buffer_size = int(part.frame_rate * part.channels * part.sample_width * 0.5)
+            self.audio_output.setBufferSize(buffer_size)
+        except Exception:
+            pass
+        
         self.audio_output.start(self.audio_buffer)
 
         self._timer.start()

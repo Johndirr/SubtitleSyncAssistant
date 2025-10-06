@@ -311,8 +311,9 @@ class MainWindow(QWidget):
         act_jump = QAction("Jump to", self)
         act_edit = QAction("Edit...", self)
         act_delete = QAction("Delete line(s)", self)
-        act_shift_sel = QAction("Shift times for selected line(s)", self)
-        act_shift_all = QAction("Shift all times", self)
+        act_shift_sel = QAction("Shift times for selected line(s)...", self)
+        act_shift_all = QAction("Shift all times...", self)
+        act_shift_by_offset = QAction("Shift times by found offset for selected line(s)", self)  # NEW
         act_undo_shift = QAction("Undo shift for selected line(s)", self)
         act_find_offsets = QAction("Find Offset(s) (BBC-offset-finder)", self)
         act_find_offsets_range = QAction("Find Offset(s) in range (BBC-offset-finder)", self)
@@ -320,7 +321,7 @@ class MainWindow(QWidget):
         act_preview = QAction("Show preview images", self)
 
         menu.addAction(act_play); menu.addAction(act_jump); menu.addAction(act_edit); menu.addSeparator()
-        menu.addAction(act_delete); menu.addSeparator(); menu.addAction(act_shift_sel); menu.addAction(act_shift_all); menu.addAction(act_undo_shift); menu.addSeparator()
+        menu.addAction(act_delete); menu.addSeparator(); menu.addAction(act_shift_sel); menu.addAction(act_shift_all); menu.addAction(act_shift_by_offset); menu.addAction(act_undo_shift); menu.addSeparator()  # MODIFIED LINE
         menu.addAction(act_find_offsets); menu.addAction(act_find_offsets_range); menu.addSeparator(); menu.addAction(act_export)
         menu.addSeparator(); menu.addAction(act_preview)
 
@@ -330,6 +331,7 @@ class MainWindow(QWidget):
         act_delete.triggered.connect(self.synctable_delete_selected)
         act_shift_sel.triggered.connect(lambda: self.shift_times(selected_only=True))
         act_shift_all.triggered.connect(lambda: self.shift_times(selected_only=False))
+        act_shift_by_offset.triggered.connect(self.shift_times_by_found_offset)  # NEW
         act_undo_shift.triggered.connect(self.undo_total_shift_for_selected)
         act_find_offsets.triggered.connect(self.find_offsets_for_selected)
         act_find_offsets_range.triggered.connect(self.find_offsets_for_selected_in_range)
@@ -674,6 +676,74 @@ class MainWindow(QWidget):
             self.plot2.set_subtitle_intervals(self._collect_synctable_intervals())
             if self._preview_win and self._preview_win.isVisible():
                 self._update_preview_images_from_selection()
+    
+    def shift_times_by_found_offset(self):
+        """Apply the 'Found offset' value from column 3 to each selected row.
+    
+        Only rows with valid numeric offsets are shifted. Rows with non-numeric
+        values (e.g., 'range-too-short', empty, or error messages) are skipped
+        without changing their color. Successfully shifted rows are colored with
+        _shift_sel_color to indicate manual adjustment.
+        """
+        sel = self.synctable.selectionModel().selectedRows()
+        if not sel:
+            return
+
+        shifted_rows = []  # Track rows that were actually shifted
+    
+        for idx in sel:
+            r = idx.row()
+            s_item = self.synctable.item(r, 0)
+            e_item = self.synctable.item(r, 1)
+            offset_item = self.synctable.item(r, 3)  # "Found offset" column
+        
+            if not (s_item and e_item and offset_item):
+                continue
+        
+            # Try to parse the offset value
+            offset_text = offset_item.text().strip()
+            if not offset_text:
+                continue  # Skip empty offsets
+        
+            try:
+                # Parse offset - must start with + or - and be a valid float
+                if not (offset_text[0] in "+-" and len(offset_text) > 1):
+                    continue  # Skip non-numeric values like "range-too-short", "err:...", etc.
+            
+                offset_value = float(offset_text.replace(",", "."))
+            except (ValueError, IndexError):
+                continue  # Skip invalid values
+        
+            # Apply the offset to start and end times
+            s = self._parse_time_to_seconds(s_item.text()) + offset_value
+            e = self._parse_time_to_seconds(e_item.text()) + offset_value
+            s = max(0.0, s)
+            e = max(s, e)
+            s_item.setText(self._format_seconds_to_time(s))
+            e_item.setText(self._format_seconds_to_time(e))
+        
+            # Update cumulative shift column (index 4)
+            ts_item = self.synctable.item(r, 4)
+            if ts_item is None:
+                ts_item = QTableWidgetItem("+0.000")
+                self.synctable.setItem(r, 4, ts_item)
+            try:
+                current = float(ts_item.text().replace(",", "."))
+            except ValueError:
+                current = 0.0
+            new_total = current + offset_value
+            ts_item.setText(f"{new_total:+.3f}")
+        
+            # Mark this row as shifted
+            shifted_rows.append(r)
+    
+        # Color only the rows that were actually shifted
+        if shifted_rows:
+            self._mark_rows_shifted(shifted_rows, all_mode=False)
+            self.plot2.set_subtitle_intervals(self._collect_synctable_intervals())
+            # If preview window is open, refresh images to reflect shifted times
+            if self._preview_win and self._preview_win.isVisible():
+                self._update_preview_images_from_selection()
 
     def _mark_rows_shifted(self, rows: List[int], all_mode: bool):
         """Color shifted rows to visually distinguish edits.
@@ -849,23 +919,35 @@ class MainWindow(QWidget):
 
     def _apply_analysis_result(self, result: dict):
         """Receive data from worker and populate plots and both tables."""
-        self.ref_audio_segment = result["ref_full"]; self.new_audio_segment = result["new_full"]
-        self.plot1.plot_waveform(result["ref_display"], result["ref_rate"]) ; self.plot2.plot_waveform(result["new_display"], result["new_rate"])
-        self.plot1.set_audio_segment(self.ref_audio_segment); self.plot2.set_audio_segment(self.new_audio_segment)
+        self.ref_audio_segment = result["ref_full"]
+        self.new_audio_segment = result["new_full"]
+        self.plot1.plot_waveform(result["ref_display"], result["ref_rate"])
+        self.plot2.plot_waveform(result["new_display"], result["new_rate"])
+        self.plot1.set_audio_segment(self.ref_audio_segment)
+        self.plot2.set_audio_segment(self.new_audio_segment)
+        
         rows = result["rows"]
         fmt = lambda t: f"{t.hours:02}:{t.minutes:02}:{t.seconds:02},{t.milliseconds:03}"
-        self.referencetable.setRowCount(len(rows)); self.synctable.setRowCount(len(rows))
+        self.referencetable.setRowCount(len(rows))
+        self.synctable.setRowCount(len(rows))
         for i, r in enumerate(rows):
-            self.referencetable.setItem(i, 0, QTableWidgetItem(fmt(r["start"]))); self.referencetable.setItem(i, 1, QTableWidgetItem(fmt(r["end"]))); self.referencetable.setItem(i, 2, QTableWidgetItem(r["text"]))
-            self.synctable.setItem(i, 0, QTableWidgetItem(fmt(r["start"]))); self.synctable.setItem(i, 1, QTableWidgetItem(fmt(r["end"]))); self.synctable.setItem(i, 2, QTableWidgetItem(r["text"]))
-            self.synctable.setItem(i, 3, QTableWidgetItem("")); self.synctable.setItem(i, 4, QTableWidgetItem("+0.000"))
+            self.referencetable.setItem(i, 0, QTableWidgetItem(fmt(r["start"])))
+            self.referencetable.setItem(i, 1, QTableWidgetItem(fmt(r["end"])))
+            self.referencetable.setItem(i, 2, QTableWidgetItem(r["text"]))
+            self.synctable.setItem(i, 0, QTableWidgetItem(fmt(r["start"])))
+            self.synctable.setItem(i, 1, QTableWidgetItem(fmt(r["end"])))
+            self.synctable.setItem(i, 2, QTableWidgetItem(r["text"]))
+            self.synctable.setItem(i, 3, QTableWidgetItem(""))
+            self.synctable.setItem(i, 4, QTableWidgetItem("+0.000"))
             bg = QColor(245, 245, 245) if i % 2 == 0 else QColor(230, 230, 230)
             for c in range(3):
                 self.referencetable.item(i, c).setBackground(bg)
             for c in range(5):
                 self.synctable.item(i, c).setBackground(bg)
-        self.align_table_columns_left(self.referencetable); self.align_table_columns_left(self.synctable)
-        self.plot1.set_subtitle_intervals(result["intervals"]); self.plot2.set_subtitle_intervals(result["intervals"])
+        self.align_table_columns_left(self.referencetable)
+        self.align_table_columns_left(self.synctable)
+        self.plot1.set_subtitle_intervals(result["intervals"])
+        self.plot2.set_subtitle_intervals(result["intervals"])
 
     # ---------- Offset Support ----------
     def _ensure_audio_caches_for_offsets(self) -> bool:
