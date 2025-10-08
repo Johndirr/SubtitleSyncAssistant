@@ -28,7 +28,7 @@ PPS: Thank you to the BBC for their excellent audio-offset-finder
   - White: unmodified
   - Yellow: modified (edit or shift)
   - Orange: offset detected
-  - Red: invalid (end before start, empty text)
+  - Red: invalid (end before start, empty text), low score (most likely not a real match)
 - Automatic offset detection using BBC audio offset finder
   - Global search: find each reference line within the entire NEW audio.
   - In-range search: enter a single search length in minutes (e.g., 0.5, 1.5). For each selected line the NEW search slice is [ref_start − L, ref_end + L] (clamped to media duration), while the reference snippet stays exactly [ref_start, ref_end].
@@ -78,9 +78,10 @@ From the project root (where `subtitle_sync_assistant.py` resides): `python subt
 
 1. Load reference media, new media, and the original subtitle.
 2. Click "Analyze..." to populate waveform plots and tables.
-3. (Optional) Select lines and run offset detection ("Find Offset(s)" or range/sliding variant).
-4. Shift or edit lines as required.
-5. Export the synchronized subtitle via the sync table context menu.
+3. Select lines and run offset detection ("Find Offset(s)" or range/sliding variant).
+4. Check results in table and waveform plots. Manually verify using preview images and waveforms if the score is low or the offset seems off.
+5. Shift or edit lines as required.
+6. Export the synchronized subtitle via the sync table context menu.
 
 ## Notes
 

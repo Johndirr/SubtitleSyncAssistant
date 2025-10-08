@@ -84,7 +84,7 @@ class MainWindow(QWidget):
         """Initialize the UI, state caches and threads/workers placeholders."""
         super().__init__()
         self.setWindowTitle("Subtitle Sync Assistant")
-        self.resize(1024, 600)
+        self.resize(1200, 600)
         self._build_ui()
 
         # Audio playback shared state for table-row preview
@@ -166,11 +166,12 @@ class MainWindow(QWidget):
         self.referencetable.setContextMenuPolicy(Qt.CustomContextMenu)
         self.referencetable.customContextMenuRequested.connect(self.show_referencetable_context_menu)
 
-        self.synctable = QTableWidget(0, 5)
-        self.synctable.setHorizontalHeaderLabels(["Start time", "End time", "Text", "Found offset", "Total shift"])
-        self._init_table_column_sizing(self.synctable, [0, 1, 3, 4], [2])
+        # Sync table (right)
+        self.synctable = QTableWidget(0, 6)  # Changed from 5 to 6 columns
+        self.synctable.setHorizontalHeaderLabels(["Start time", "End time", "Text", "Found offset", "Score", "Total shift"])  # Added "Score"
+        self._init_table_column_sizing(self.synctable, [0, 1, 3, 4, 5], [2])  # Updated column indices
         # Header tooltip for "Total shift"
-        hdrTotalshift = self.synctable.horizontalHeaderItem(4)
+        hdrTotalshift = self.synctable.horizontalHeaderItem(5)
         if hdrTotalshift:
             hdrTotalshift.setToolTip(
                 "Cumulative time shift that was applied to a line."
@@ -378,10 +379,10 @@ class MainWindow(QWidget):
         s_item.setText(new_start); e_item.setText(new_end); t_item.setText(new_text)
 
         # Update cumulative Total shift
-        ts_item = self.synctable.item(row, 4)
+        ts_item = self.synctable.item(row, 5)
         if ts_item is None:
             ts_item = QTableWidgetItem("+0.000")
-            self.synctable.setItem(row, 4, ts_item)
+            self.synctable.setItem(row, 5, ts_item)
         try:
             current_total = float(ts_item.text().replace(",", "."))
         except ValueError:
@@ -613,10 +614,10 @@ class MainWindow(QWidget):
             e_item.setText(self._format_seconds_to_time(e))
 
             # Update cumulative shift column (index 4)
-            ts_item = self.synctable.item(r, 4)
+            ts_item = self.synctable.item(r, 5)
             if ts_item is None:
                 ts_item = QTableWidgetItem("+0.000")
-                self.synctable.setItem(r, 4, ts_item)
+                self.synctable.setItem(r, 5, ts_item)
             try:
                 current = float(ts_item.text().replace(",", "."))
             except ValueError:
@@ -640,7 +641,7 @@ class MainWindow(QWidget):
             r = idx.row()
             s_item = self.synctable.item(r, 0)
             e_item = self.synctable.item(r, 1)
-            ts_item = self.synctable.item(r, 4)  # "Total shift"
+            ts_item = self.synctable.item(r, 5)  # "Total shift" (moved from column 4 to 5)
             if not (s_item and e_item and ts_item):
                 continue
 
@@ -723,10 +724,10 @@ class MainWindow(QWidget):
             e_item.setText(self._format_seconds_to_time(e))
         
             # Update cumulative shift column (index 4)
-            ts_item = self.synctable.item(r, 4)
+            ts_item = self.synctable.item(r, 5)
             if ts_item is None:
                 ts_item = QTableWidgetItem("+0.000")
-                self.synctable.setItem(r, 4, ts_item)
+                self.synctable.setItem(r, 5, ts_item)
             try:
                 current = float(ts_item.text().replace(",", "."))
             except ValueError:
@@ -937,12 +938,13 @@ class MainWindow(QWidget):
             self.synctable.setItem(i, 0, QTableWidgetItem(fmt(r["start"])))
             self.synctable.setItem(i, 1, QTableWidgetItem(fmt(r["end"])))
             self.synctable.setItem(i, 2, QTableWidgetItem(r["text"]))
-            self.synctable.setItem(i, 3, QTableWidgetItem(""))
-            self.synctable.setItem(i, 4, QTableWidgetItem("+0.000"))
+            self.synctable.setItem(i, 3, QTableWidgetItem(""))  # Found offset
+            self.synctable.setItem(i, 4, QTableWidgetItem(""))  # Score (NEW)
+            self.synctable.setItem(i, 5, QTableWidgetItem("+0.000"))  # Total shift (moved from 4 to 5)
             bg = QColor(245, 245, 245) if i % 2 == 0 else QColor(230, 230, 230)
             for c in range(3):
                 self.referencetable.item(i, c).setBackground(bg)
-            for c in range(5):
+            for c in range(6):  # Changed from 5 to 6
                 self.synctable.item(i, c).setBackground(bg)
         self.align_table_columns_left(self.referencetable)
         self.align_table_columns_left(self.synctable)
@@ -1055,23 +1057,55 @@ class MainWindow(QWidget):
         self._offset_worker = worker
         worker.moveToThread(thread)
 
-        def on_result(row_index: int, delta_val, status: str, _worker=worker):
+        def on_result(row_index: int, delta_val, status: str, score, _worker=worker):
             """Update the Found offset cell per result and color by status."""
             if _worker is not self._offset_worker:
                 return
+            # Found offset cell (column 3)
             cell = self.synctable.item(row_index, 3)
             if cell is None:
                 self.synctable.setItem(row_index, 3, QTableWidgetItem(""))
                 cell = self.synctable.item(row_index, 3)
+            
+            # Score cell (column 4)
+            score_cell = self.synctable.item(row_index, 4)
+            if score_cell is None:
+                self.synctable.setItem(row_index, 4, QTableWidgetItem(""))
+                score_cell = self.synctable.item(row_index, 4)
+            
             if delta_val is None:
                 cell.setText(status)
                 cell.setBackground(QColor(240, 240, 200) if not status.startswith("err") else QColor(255, 210, 210))
+                score_cell.setText("")
+                score_cell.setBackground(QColor(240, 240, 200) if not status.startswith("err") else QColor(255, 210, 210))
             else:
                 # Invert sign to match UI convention for reference-in-NEW search
                 adj = -delta_val
-                sign = "+" if adj >= 0 else "-"
-                cell.setText(f"{sign}{abs(adj):.3f}")
-                cell.setBackground(QColor(210, 245, 210) if status == "ok" else QColor(255, 210, 210))
+                cell.setText(f"{adj:+.3f}")
+                
+                # Determine color based on score value
+                if score is not None and float(score) < 7.0:
+                    # Red for low scores (below 7)
+                    offset_color = QColor(255, 210, 210)
+                    score_color = QColor(255, 210, 210)
+                elif status == "ok":
+                    # Green for good scores
+                    offset_color = QColor(210, 245, 210)
+                    score_color = QColor(210, 245, 210)
+                else:
+                    # Default red for errors
+                    offset_color = QColor(255, 210, 210)
+                    score_color = QColor(255, 210, 210)
+                
+                cell.setBackground(offset_color)
+                
+                # Display score
+                if score is not None:
+                    score_cell.setText(f"{float(score):.2f}")
+                    score_cell.setBackground(score_color)
+                else:
+                    score_cell.setText("")
+                    score_cell.setBackground(QColor(240, 240, 200))
 
         def on_progress(row_index: int, msg: str, _worker=worker):
             """Update BusyDialog with progress text from the worker."""
@@ -1254,7 +1288,7 @@ class MainWindow(QWidget):
                 slice_end = min(new_total_sec, ref_e + L_sec)
 
             if slice_end <= slice_start:
-                update_cell(row_idx, None, "range-too-short")
+                update_cell(row_idx, None, "range-too-short", None)  # Added score parameter
                 run_task(task_index + 1)
                 return
 
@@ -1262,7 +1296,7 @@ class MainWindow(QWidget):
             start_i = int(slice_start * self._new_sr_cache)  # type: ignore[operator]
             end_i = min(int(slice_end * self._new_sr_cache), self._new_mono_cache.shape[0])  # type: ignore[operator]
             if end_i - start_i < 100:
-                update_cell(row_idx, None, "range-too-short")
+                update_cell(row_idx, None, "range-too-short", None)  # Added score parameter
                 run_task(task_index + 1)
                 return
 
@@ -1295,14 +1329,14 @@ class MainWindow(QWidget):
             self._offset_worker = worker
             worker.moveToThread(thread)
 
-            def on_result(r_i: int, delta_val, status: str, _worker=worker):
+            def on_result(r_i: int, delta_val, status: str, score, _worker=worker):  # Added score parameter
                 if _worker is not self._offset_worker:
                     return
                 if delta_val is None:
-                    update_cell(r_i, None, status)
+                    update_cell(r_i, None, status, None)  # Added score parameter
                 else:
                     # Negate to keep "reference in NEW" UI convention
-                    update_cell(r_i, -delta_val, status)
+                    update_cell(r_i, -delta_val, status, score)  # Added score parameter
 
             def on_progress(_row_index: int, msg: str, _worker=worker):
                 if _worker is not self._offset_worker:
@@ -1376,18 +1410,51 @@ class MainWindow(QWidget):
                     pass
                 self._busy_offset = None
 
-        def update_cell(row_index: int, delta_val, status: str):
+        def update_cell(row_index: int, delta_val, status: str, score):  # Added score parameter
+            # Found offset cell (column 3)
             cell = self.synctable.item(row_index, 3)
             if cell is None:
                 self.synctable.setItem(row_index, 3, QTableWidgetItem(""))
                 cell = self.synctable.item(row_index, 3)
+            
+            # Score cell (column 4) - NEW
+            score_cell = self.synctable.item(row_index, 4)
+            if score_cell is None:
+                self.synctable.setItem(row_index, 4, QTableWidgetItem(""))
+                score_cell = self.synctable.item(row_index, 4)
+            
             if delta_val is None:
                 cell.setText(status)
                 cell.setBackground(QColor(240, 240, 200) if not status or not status.startswith("err") else QColor(255, 210, 210))
+                score_cell.setText("")
+                score_cell.setBackground(QColor(240, 240, 200) if not status or not status.startswith("err") else QColor(255, 210, 210))
             else:
                 sign = "+" if delta_val >= 0 else "-"
                 cell.setText(f"{sign}{abs(float(delta_val)):.3f}")
-                cell.setBackground(QColor(210, 245, 210) if status == "ok" else QColor(255, 210, 210))
+                
+                # Determine color based on score value
+                if score is not None and float(score) < 7.0:
+                    # Red for low scores (below 7)
+                    offset_color = QColor(255, 210, 210)
+                    score_color = QColor(255, 210, 210)
+                elif status == "ok":
+                    # Green for good scores
+                    offset_color = QColor(210, 245, 210)
+                    score_color = QColor(210, 245, 210)
+                else:
+                    # Default red for errors
+                    offset_color = QColor(255, 210, 210)
+                    score_color = QColor(255, 210, 210)
+                
+                cell.setBackground(offset_color)
+                
+                # Display score
+                if score is not None:
+                    score_cell.setText(f"{float(score):.2f}")
+                    score_cell.setBackground(score_color)
+                else:
+                    score_cell.setText("")
+                    score_cell.setBackground(QColor(240, 240, 200))
 
         # Start processing
         run_task(0)

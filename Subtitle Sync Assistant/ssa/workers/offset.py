@@ -41,7 +41,7 @@ class OffsetWorker(QObject):
     """Find offsets by correlating each new snippet against a reference wave."""
 
     progress = pyqtSignal(int, str)
-    result = pyqtSignal(int, object, str)
+    result = pyqtSignal(int, object, str, object)  # Added fourth parameter for score
     finished = pyqtSignal()
     failed = pyqtSignal(str)
     cancelled = pyqtSignal()
@@ -97,12 +97,12 @@ class OffsetWorker(QObject):
                 self._check_abort()
                 dur = end_sec - start_sec
                 if dur <= 0 or dur < self.min_duration:
-                    self.result.emit(idx, None, "too short")
+                    self.result.emit(idx, None, "too short", None)
                     continue
                 start_i = int(start_sec * self.new_sr)
                 end_i = min(int(end_sec * self.new_sr), self.new_wave.shape[0])
                 if end_i <= start_i:
-                    self.result.emit(idx, None, "empty")
+                    self.result.emit(idx, None, "empty", None)
                     continue
                 snippet = self.new_wave[start_i:end_i]
                 if self.new_sr != self.ref_sr:
@@ -110,16 +110,18 @@ class OffsetWorker(QObject):
                 try:
                     res = find_offset_between_buffers(self.ref_wave, snippet, self.ref_sr)
                 except Exception as ex:
-                    self.result.emit(idx, None, f"err:{ex}")
+                    self.result.emit(idx, None, f"err:{ex}", None)
                     continue
                 if not isinstance(res, dict) or "time_offset" not in res:
-                    self.result.emit(idx, None, "bad-result")
+                    self.result.emit(idx, None, "bad-result", None)
                     continue
                 # time_offset is the absolute time in reference where snippet best matches
                 time_offset_global = float(res["time_offset"]) + self.ref_offset_sec
                 # We want delta to add to each row's time to align with the ref timeline
                 delta = start_sec - time_offset_global
-                self.result.emit(idx, delta, "ok")
+                # Extract score from result (standard_score)
+                score = res.get("standard_score", None)
+                self.result.emit(idx, delta, "ok", score)
                 self.progress.emit(idx, f"{seq}/{total} (row {idx+1})")
             self.finished.emit()
         except RuntimeError as ex:
@@ -139,7 +141,7 @@ class SlidingOffsetWorker(QObject):
     """
 
     progress = pyqtSignal(int, str)
-    result = pyqtSignal(int, object, str)
+    result = pyqtSignal(int, object, str, object)  # Added fourth parameter for score
     finished = pyqtSignal()
     failed = pyqtSignal(str)
     cancelled = pyqtSignal()
@@ -182,12 +184,12 @@ class SlidingOffsetWorker(QObject):
                 self._check_abort()
                 dur = end_sec - start_sec
                 if dur <= 0 or dur < self.min_duration:
-                    self.result.emit(idx, None, "too short")
+                    self.result.emit(idx, None, "too short", None)
                     continue
                 start_i = int(start_sec * self.new_sr)
                 end_i = min(int(end_sec * self.new_sr), self.new_wave.shape[0])
                 if end_i <= start_i:
-                    self.result.emit(idx, None, "empty")
+                    self.result.emit(idx, None, "empty", None)
                     continue
                 snippet = self.new_wave[start_i:end_i]
                 if self.new_sr != ref_sr:
@@ -195,14 +197,16 @@ class SlidingOffsetWorker(QObject):
                 try:
                     res = find_offset_between_buffers(ref_slice.astype(np.float32), snippet, ref_sr)
                 except Exception as ex:
-                    self.result.emit(idx, None, f"err:{ex}")
+                    self.result.emit(idx, None, f"err:{ex}", None)
                     continue
                 if not isinstance(res, dict) or "time_offset" not in res:
-                    self.result.emit(idx, None, "bad-result")
+                    self.result.emit(idx, None, "bad-result", None)
                     continue
                 time_offset_global = float(res["time_offset"]) + ref_offset_sec
                 delta = start_sec - time_offset_global
-                self.result.emit(idx, delta, "ok")
+                # Extract score from result (standard_score)
+                score = res.get("standard_score", None)
+                self.result.emit(idx, delta, "ok", score)
                 self.progress.emit(idx, f"{seq}/{total} (row {idx+1})")
             self.finished.emit()
         except RuntimeError as ex:
