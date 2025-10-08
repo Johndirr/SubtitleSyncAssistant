@@ -39,7 +39,7 @@ import numpy as np
 import pysrt
 from pydub import AudioSegment
 
-from PyQt5.QtCore import Qt, QByteArray, QBuffer, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QByteArray, QBuffer, QThread, pyqtSignal, QTimer  # Added QTimer
 from PyQt5.QtGui import QColor
 from PyQt5.QtMultimedia import QAudioFormat, QAudioOutput
 from PyQt5.QtWidgets import (
@@ -112,6 +112,17 @@ class MainWindow(QWidget):
 
         # Preview window (created lazily)
         self._preview_win: Optional[PreviewImagesWindow] = None
+
+        # --- Manual edit handling for start/end times -> waveform update ---
+        # Suppress flag prevents expensive refresh spam during bulk ops
+        self._suppress_item_changed: bool = False
+        # Debounce timer groups rapid edits into a single interval refresh
+        self._debounce_timer = QTimer(self)
+        self._debounce_timer.setSingleShot(True)
+        self._debounce_timer.timeout.connect(self._debounced_interval_refresh)
+        # Connect after tables exist
+        self.referencetable.itemChanged.connect(self._on_table_item_changed)
+        self.synctable.itemChanged.connect(self._on_table_item_changed)
 
     # ---------- UI ----------
     def _build_ui(self):
@@ -287,6 +298,52 @@ class MainWindow(QWidget):
         # Add to the provided menu at the current insertion point
         menu.addAction(act_preview)
 
+    # ---------- NEW: Manual time edit handling ----------
+    def _on_table_item_changed(self, item: QTableWidgetItem):
+        """React to user edits of start/end time cells by refreshing waveform intervals.
+
+        Debounced to avoid performance issues while the user types or during
+        multi-cell edits (e.g. paste). Suppressed during bulk programmatic
+        updates (analysis load, shifting operations) using _suppress_item_changed.
+        """
+        if self._suppress_item_changed:
+            return
+        if not item:
+            return
+        table = item.tableWidget()
+        if table not in (self.referencetable, self.synctable):
+            return
+        col = item.column()
+        if col not in (0, 1):  # Only care about start/end time edits
+            return
+        row = item.row()
+        # Sanitize the edited row's time values (keep consistent formatting)
+        start_item = table.item(row, 0)
+        end_item = table.item(row, 1)
+        if not start_item or not end_item:
+            return
+        try:
+            s = self._parse_time_to_seconds(start_item.text())
+            e = self._parse_time_to_seconds(end_item.text())
+            if e < s:
+                e = s  # Clamp end to start if reversed
+            # Reformat (avoid recursion by suppressing temporarily)
+            self._suppress_item_changed = True
+            start_item.setText(self._format_seconds_to_time(s))
+            end_item.setText(self._format_seconds_to_time(e))
+        finally:
+            self._suppress_item_changed = False
+        # Debounce interval refresh (120ms)
+        self._debounce_timer.start(120)
+
+    def _debounced_interval_refresh(self):
+        """Apply updated interval overlays after debounced manual edits."""
+        self.plot1.set_subtitle_intervals(self._collect_referencetable_intervals())
+        self.plot2.set_subtitle_intervals(self._collect_synctable_intervals())
+        # Keep preview in sync if it is visible
+        if self._preview_win and self._preview_win.isVisible():
+            self._update_preview_images_from_selection()
+
     # ---------- Selection -> plot highlight ----------
     def on_reference_table_selection(self):
         """Highlight selected reference rows on the reference plot."""
@@ -375,8 +432,12 @@ class MainWindow(QWidget):
         new_start_sec = self._parse_time_to_seconds(new_start)
         delta = new_start_sec - old_start_sec
 
-        # Apply edits
-        s_item.setText(new_start); e_item.setText(new_end); t_item.setText(new_text)
+        # Apply edits (suppress handler to avoid duplicate refresh)
+        self._suppress_item_changed = True
+        try:
+            s_item.setText(new_start); e_item.setText(new_end); t_item.setText(new_text)
+        finally:
+            self._suppress_item_changed = False
 
         # Update cumulative Total shift
         ts_item = self.synctable.item(row, 5)
@@ -532,8 +593,12 @@ class MainWindow(QWidget):
             return
 
         # Delete in both tables using the same row indices (keeps them aligned)
-        self._delete_rows_from_table(self.synctable, rows_to_delete)
-        self._delete_rows_from_table(self.referencetable, rows_to_delete)
+        self._suppress_item_changed = True
+        try:
+            self._delete_rows_from_table(self.synctable, rows_to_delete)
+            self._delete_rows_from_table(self.referencetable, rows_to_delete)
+        finally:
+            self._suppress_item_changed = False
 
         # Refresh plots based on current table contents
         self.plot2.set_subtitle_intervals(self._collect_synctable_intervals())
@@ -603,27 +668,31 @@ class MainWindow(QWidget):
         except ValueError:
             QMessageBox.warning(self, "Invalid Input", "Could not parse shift value.")
             return
-        for r in target:
-            s_item = self.synctable.item(r, 0); e_item = self.synctable.item(r, 1)
-            if not s_item or not e_item:
-                continue
-            s = self._parse_time_to_seconds(s_item.text()) + delta
-            e = self._parse_time_to_seconds(e_item.text()) + delta
-            s = max(0.0, s); e = max(s, e)
-            s_item.setText(self._format_seconds_to_time(s))
-            e_item.setText(self._format_seconds_to_time(e))
+        self._suppress_item_changed = True
+        try:
+            for r in target:
+                s_item = self.synctable.item(r, 0); e_item = self.synctable.item(r, 1)
+                if not s_item or not e_item:
+                    continue
+                s = self._parse_time_to_seconds(s_item.text()) + delta
+                e = self._parse_time_to_seconds(e_item.text()) + delta
+                s = max(0.0, s); e = max(s, e)
+                s_item.setText(self._format_seconds_to_time(s))
+                e_item.setText(self._format_seconds_to_time(e))
 
-            # Update cumulative shift column (index 4)
-            ts_item = self.synctable.item(r, 5)
-            if ts_item is None:
-                ts_item = QTableWidgetItem("+0.000")
-                self.synctable.setItem(r, 5, ts_item)
-            try:
-                current = float(ts_item.text().replace(",", "."))
-            except ValueError:
-                current = 0.0
-            new_total = current + delta
-            ts_item.setText(f"{new_total:+.3f}")
+                # Update cumulative shift column (index 4)
+                ts_item = self.synctable.item(r, 5)
+                if ts_item is None:
+                    ts_item = QTableWidgetItem("+0.000")
+                    self.synctable.setItem(r, 5, ts_item)
+                try:
+                    current = float(ts_item.text().replace(",", "."))
+                except ValueError:
+                    current = 0.0
+                new_total = current + delta
+                ts_item.setText(f"{new_total:+.3f}")
+        finally:
+            self._suppress_item_changed = False
         self._mark_rows_shifted(target, all_mode=not selected_only)
         self.plot2.set_subtitle_intervals(self._collect_synctable_intervals())
         # If preview window is open, refresh images to reflect shifted times
@@ -637,47 +706,51 @@ class MainWindow(QWidget):
             return
 
         any_changed = False
-        for idx in sel:
-            r = idx.row()
-            s_item = self.synctable.item(r, 0)
-            e_item = self.synctable.item(r, 1)
-            ts_item = self.synctable.item(r, 5)  # "Total shift" (moved from column 4 to 5)
-            if not (s_item and e_item and ts_item):
-                continue
+        self._suppress_item_changed = True
+        try:
+            for idx in sel:
+                r = idx.row()
+                s_item = self.synctable.item(r, 0)
+                e_item = self.synctable.item(r, 1)
+                ts_item = self.synctable.item(r, 5)  # "Total shift" (moved from column 4 to 5)
+                if not (s_item and e_item and ts_item):
+                    continue
 
-            # Parse cumulative shift; skip when zero/invalid
-            try:
-                total_shift = float(ts_item.text().replace(",", "."))
-            except Exception:
-                total_shift = 0.0
-            if abs(total_shift) < 1e-9:
-                continue
+                # Parse cumulative shift; skip when zero/invalid
+                try:
+                    total_shift = float(ts_item.text().replace(",", "."))
+                except Exception:
+                    total_shift = 0.0
+                if abs(total_shift) < 1e-9:
+                    continue
 
-            # Apply inverse shift to start/end
-            delta = -total_shift
-            s = max(0.0, self._parse_time_to_seconds(s_item.text()) + delta)
-            e = max(s, self._parse_time_to_seconds(e_item.text()) + delta)
-            s_item.setText(self._format_seconds_to_time(s))
-            e_item.setText(self._format_seconds_to_time(e))
+                # Apply inverse shift to start/end
+                delta = -total_shift
+                s = max(0.0, self._parse_time_to_seconds(s_item.text()) + delta)
+                e = max(s, self._parse_time_to_seconds(e_item.text()) + delta)
+                s_item.setText(self._format_seconds_to_time(s))
+                e_item.setText(self._format_seconds_to_time(e))
 
-            # Reset cumulative shift
-            ts_item.setText("+0.000")
+                # Reset cumulative shift
+                ts_item.setText("+0.000")
 
-            # Restore alternating background for the row
-            bg = QColor(245, 245, 245) if r % 2 == 0 else QColor(230, 230, 230)
-            for c in range(self.synctable.columnCount()):
-                itm = self.synctable.item(r, c)
-                if itm:
-                    itm.setBackground(bg)
+                # Restore alternating background for the row
+                bg = QColor(245, 245, 245) if r % 2 == 0 else QColor(230, 230, 230)
+                for c in range(self.synctable.columnCount()):
+                    itm = self.synctable.item(r, c)
+                    if itm:
+                        itm.setBackground(bg)
 
-            any_changed = True
+                any_changed = True
+        finally:
+            self._suppress_item_changed = False
 
         if any_changed:
             # Refresh plot and preview (if open)
             self.plot2.set_subtitle_intervals(self._collect_synctable_intervals())
             if self._preview_win and self._preview_win.isVisible():
                 self._update_preview_images_from_selection()
-    
+
     def shift_times_by_found_offset(self):
         """Apply the 'Found offset' value from column 3 to each selected row.
     
@@ -691,52 +764,55 @@ class MainWindow(QWidget):
             return
 
         shifted_rows = []  # Track rows that were actually shifted
-    
-        for idx in sel:
-            r = idx.row()
-            s_item = self.synctable.item(r, 0)
-            e_item = self.synctable.item(r, 1)
-            offset_item = self.synctable.item(r, 3)  # "Found offset" column
-        
-            if not (s_item and e_item and offset_item):
-                continue
-        
-            # Try to parse the offset value
-            offset_text = offset_item.text().strip()
-            if not offset_text:
-                continue  # Skip empty offsets
-        
-            try:
-                # Parse offset - must start with + or - and be a valid float
-                if not (offset_text[0] in "+-" and len(offset_text) > 1):
-                    continue  # Skip non-numeric values like "range-too-short", "err:...", etc.
+        self._suppress_item_changed = True
+        try:
+            for idx in sel:
+                r = idx.row()
+                s_item = self.synctable.item(r, 0)
+                e_item = self.synctable.item(r, 1)
+                offset_item = self.synctable.item(r, 3)  # "Found offset" column
             
-                offset_value = float(offset_text.replace(",", "."))
-            except (ValueError, IndexError):
-                continue  # Skip invalid values
-        
-            # Apply the offset to start and end times
-            s = self._parse_time_to_seconds(s_item.text()) + offset_value
-            e = self._parse_time_to_seconds(e_item.text()) + offset_value
-            s = max(0.0, s)
-            e = max(s, e)
-            s_item.setText(self._format_seconds_to_time(s))
-            e_item.setText(self._format_seconds_to_time(e))
-        
-            # Update cumulative shift column (index 4)
-            ts_item = self.synctable.item(r, 5)
-            if ts_item is None:
-                ts_item = QTableWidgetItem("+0.000")
-                self.synctable.setItem(r, 5, ts_item)
-            try:
-                current = float(ts_item.text().replace(",", "."))
-            except ValueError:
-                current = 0.0
-            new_total = current + offset_value
-            ts_item.setText(f"{new_total:+.3f}")
-        
-            # Mark this row as shifted
-            shifted_rows.append(r)
+                if not (s_item and e_item and offset_item):
+                    continue
+            
+                # Try to parse the offset value
+                offset_text = offset_item.text().strip()
+                if not offset_text:
+                    continue  # Skip empty offsets
+            
+                try:
+                    # Parse offset - must start with + or - and be a valid float
+                    if not (offset_text[0] in "+-" and len(offset_text) > 1):
+                        continue  # Skip non-numeric values like "range-too-short", "err:...", etc.
+                
+                    offset_value = float(offset_text.replace(",", "."))
+                except (ValueError, IndexError):
+                    continue  # Skip invalid values
+            
+                # Apply the offset to start and end times
+                s = self._parse_time_to_seconds(s_item.text()) + offset_value
+                e = self._parse_time_to_seconds(e_item.text()) + offset_value
+                s = max(0.0, s)
+                e = max(s, e)
+                s_item.setText(self._format_seconds_to_time(s))
+                e_item.setText(self._format_seconds_to_time(e))
+            
+                # Update cumulative shift column (index 4)
+                ts_item = self.synctable.item(r, 5)
+                if ts_item is None:
+                    ts_item = QTableWidgetItem("+0.000")
+                    self.synctable.setItem(r, 5, ts_item)
+                try:
+                    current = float(ts_item.text().replace(",", "."))
+                except ValueError:
+                    current = 0.0
+                new_total = current + offset_value
+                ts_item.setText(f"{new_total:+.3f}")
+            
+                # Mark this row as shifted
+                shifted_rows.append(r)
+        finally:
+            self._suppress_item_changed = False
     
         # Color only the rows that were actually shifted
         if shifted_rows:
@@ -929,23 +1005,28 @@ class MainWindow(QWidget):
         
         rows = result["rows"]
         fmt = lambda t: f"{t.hours:02}:{t.minutes:02}:{t.seconds:02},{t.milliseconds:03}"
-        self.referencetable.setRowCount(len(rows))
-        self.synctable.setRowCount(len(rows))
-        for i, r in enumerate(rows):
-            self.referencetable.setItem(i, 0, QTableWidgetItem(fmt(r["start"])))
-            self.referencetable.setItem(i, 1, QTableWidgetItem(fmt(r["end"])))
-            self.referencetable.setItem(i, 2, QTableWidgetItem(r["text"]))
-            self.synctable.setItem(i, 0, QTableWidgetItem(fmt(r["start"])))
-            self.synctable.setItem(i, 1, QTableWidgetItem(fmt(r["end"])))
-            self.synctable.setItem(i, 2, QTableWidgetItem(r["text"]))
-            self.synctable.setItem(i, 3, QTableWidgetItem(""))  # Found offset
-            self.synctable.setItem(i, 4, QTableWidgetItem(""))  # Score (NEW)
-            self.synctable.setItem(i, 5, QTableWidgetItem("+0.000"))  # Total shift (moved from 4 to 5)
-            bg = QColor(245, 245, 245) if i % 2 == 0 else QColor(230, 230, 230)
-            for c in range(3):
-                self.referencetable.item(i, c).setBackground(bg)
-            for c in range(6):  # Changed from 5 to 6
-                self.synctable.item(i, c).setBackground(bg)
+        # Suppress per-cell itemChanged while bulk inserting
+        self._suppress_item_changed = True
+        try:
+            self.referencetable.setRowCount(len(rows))
+            self.synctable.setRowCount(len(rows))
+            for i, r in enumerate(rows):
+                self.referencetable.setItem(i, 0, QTableWidgetItem(fmt(r["start"])))
+                self.referencetable.setItem(i, 1, QTableWidgetItem(fmt(r["end"])))
+                self.referencetable.setItem(i, 2, QTableWidgetItem(r["text"]))
+                self.synctable.setItem(i, 0, QTableWidgetItem(fmt(r["start"])))
+                self.synctable.setItem(i, 1, QTableWidgetItem(fmt(r["end"])))
+                self.synctable.setItem(i, 2, QTableWidgetItem(r["text"]))
+                self.synctable.setItem(i, 3, QTableWidgetItem(""))  # Found offset
+                self.synctable.setItem(i, 4, QTableWidgetItem(""))  # Score (NEW)
+                self.synctable.setItem(i, 5, QTableWidgetItem("+0.000"))  # Total shift (moved from 4 to 5)
+                bg = QColor(245, 245, 245) if i % 2 == 0 else QColor(230, 230, 230)
+                for c in range(3):
+                    self.referencetable.item(i, c).setBackground(bg)
+                for c in range(6):  # Changed from 5 to 6
+                    self.synctable.item(i, c).setBackground(bg)
+        finally:
+            self._suppress_item_changed = False
         self.align_table_columns_left(self.referencetable)
         self.align_table_columns_left(self.synctable)
         self.plot1.set_subtitle_intervals(result["intervals"])
@@ -1061,45 +1142,32 @@ class MainWindow(QWidget):
             """Update the Found offset cell per result and color by status."""
             if _worker is not self._offset_worker:
                 return
-            # Found offset cell (column 3)
             cell = self.synctable.item(row_index, 3)
             if cell is None:
                 self.synctable.setItem(row_index, 3, QTableWidgetItem(""))
                 cell = self.synctable.item(row_index, 3)
-            
-            # Score cell (column 4)
             score_cell = self.synctable.item(row_index, 4)
             if score_cell is None:
                 self.synctable.setItem(row_index, 4, QTableWidgetItem(""))
                 score_cell = self.synctable.item(row_index, 4)
-            
             if delta_val is None:
                 cell.setText(status)
                 cell.setBackground(QColor(240, 240, 200) if not status.startswith("err") else QColor(255, 210, 210))
                 score_cell.setText("")
                 score_cell.setBackground(QColor(240, 240, 200) if not status.startswith("err") else QColor(255, 210, 210))
             else:
-                # Invert sign to match UI convention for reference-in-NEW search
                 adj = -delta_val
                 cell.setText(f"{adj:+.3f}")
-                
-                # Determine color based on score value
                 if score is not None and float(score) < 7.0:
-                    # Red for low scores (below 7)
                     offset_color = QColor(255, 210, 210)
                     score_color = QColor(255, 210, 210)
                 elif status == "ok":
-                    # Green for good scores
                     offset_color = QColor(210, 245, 210)
                     score_color = QColor(210, 245, 210)
                 else:
-                    # Default red for errors
                     offset_color = QColor(255, 210, 210)
                     score_color = QColor(255, 210, 210)
-                
                 cell.setBackground(offset_color)
-                
-                # Display score
                 if score is not None:
                     score_cell.setText(f"{float(score):.2f}")
                     score_cell.setBackground(score_color)
@@ -1108,31 +1176,27 @@ class MainWindow(QWidget):
                     score_cell.setBackground(QColor(240, 240, 200))
 
         def on_progress(row_index: int, msg: str, _worker=worker):
-            """Update BusyDialog with progress text from the worker."""
             if _worker is not self._offset_worker:
                 return
             if self._busy_offset:
                 self._busy_offset.set_message(f"Processed {msg}")
 
         def on_finished(_worker=worker):
-            """Tear down BusyDialog when worker completes."""
             self._finish_offset_worker()
 
         def on_failed(err: str, _worker=worker):
-            """Notify on failure (unless user aborted) and tear down."""
             if err != "Aborted":
                 QMessageBox.critical(self, "Offset Finder", err)
             self._finish_offset_worker()
 
         def on_cancelled(_worker=worker):
-            """Handle cancellation and tear down."""
             self._finish_offset_worker()
 
         def cleanup(_worker=worker):
-            """Stop thread and clear worker pointers after finish/cancel/fail."""
+            # Always stop and clear regardless of running state to avoid stale pointers after cancel
             try:
                 thread.quit()
-                thread.wait()
+                thread.wait(1500)
             except Exception:
                 pass
             finally:
@@ -1140,16 +1204,13 @@ class MainWindow(QWidget):
                     self._offset_thread = None
                 if self._offset_worker is worker:
                     self._offset_worker = None
-                if self._offset_thread and not self._offset_thread.isRunning():
-                    self._offset_thread = None
-                    self._offset_worker = None
 
         worker.result.connect(on_result)
         worker.progress.connect(on_progress)
         worker.finished.connect(on_finished)
         worker.failed.connect(on_failed)
         worker.cancelled.connect(on_cancelled)
-        # Ensure cleanup always runs to release the thread/worker
+        # Ensure cleanup runs for all terminal signals
         worker.finished.connect(cleanup)
         worker.failed.connect(cleanup)
         worker.cancelled.connect(cleanup)
@@ -1157,23 +1218,24 @@ class MainWindow(QWidget):
         thread.start()
 
     def _finish_offset_worker(self):
-        """Hide BusyDialog and clear pointer after any offset worker outcome."""
+        """Hide BusyDialog and fully tear down any active offset worker/thread."""
         if self._busy_offset:
             try:
                 self._busy_offset.finish()
             except Exception:
                 pass
             self._busy_offset = None
-        # Defensive: if a thread exists but is not running anymore, clear it
-        if self._offset_thread and not self._offset_thread.isRunning():
+        # Always attempt to stop thread if it exists (even if still running after cancel)
+        if self._offset_thread:
             try:
-                self._offset_thread.quit()
-                self._offset_thread.wait()
+                if self._offset_thread.isRunning():
+                    self._offset_thread.quit()
+                    self._offset_thread.wait(1500)
             except Exception:
                 pass
-            finally:
-                self._offset_thread = None
-                self._offset_worker = None
+        # Clear pointers unconditionally
+        self._offset_thread = None
+        self._offset_worker = None
 
     def find_offsets_for_selected_in_range(self):
         """Compute offsets by matching reference lines inside the NEW audio.
@@ -1376,9 +1438,6 @@ class MainWindow(QWidget):
                         self._offset_worker = None
                     if self._offset_thread is thread:
                         self._offset_thread = None
-                    if self._offset_thread and not self._offset_thread.isRunning():
-                        self._offset_thread = None
-                        self._offset_worker = None
                     
                     # Explicitly delete worker and thread to release memory
                     try:
