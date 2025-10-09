@@ -259,6 +259,11 @@ class MainWindow(QWidget):
         # Reuse helper to parse HH:MM:SS,mmm -> seconds (float)
         return self._parse_time_to_seconds(itm.text())
 
+    def _selected_row_index(self, table: QTableWidget) -> Optional[int]:
+        """Return the first selected row index (0-based) or None."""
+        sel = table.selectionModel().selectedRows()
+        return sel[0].row() if sel else None
+
     def _update_preview_images_from_selection(self):
         """Open/refresh the preview using the current table selections.
 
@@ -269,11 +274,17 @@ class MainWindow(QWidget):
         # Read the selected start times (seconds) from both tables
         ref_time = self._selected_row_start(self.referencetable)
         new_time = self._selected_row_start(self.synctable)
+        ref_idx = self._selected_row_index(self.referencetable)
+        new_idx = self._selected_row_index(self.synctable)
         # Read the media file paths from the top inputs (empty -> None)
         ref_path = self.le1.text().strip() if self.le1.text().strip() else None
         new_path = self.le2.text().strip() if self.le2.text().strip() else None
         # Ask the preview to show/update with the provided selection
-        self._preview_window().show_for_selection(ref_path, ref_time, new_path, new_time)
+        self._preview_window().show_for_selection(
+            ref_path, ref_time,
+            new_path, new_time,
+            ref_line=ref_idx, new_line=new_idx
+        )
 
     def align_table_columns_left(self, table: QTableWidget):
         """Left-align header and cell text for all columns/rows."""

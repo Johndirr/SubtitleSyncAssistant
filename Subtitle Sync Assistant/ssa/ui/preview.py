@@ -180,30 +180,73 @@ class PreviewImagesWindow(QWidget):
         self.ref_title.setText(f"Reference\n{os.path.basename(ref_path) if ref_path else '(none)'}")
         self.new_title.setText(f"New\n{os.path.basename(new_path) if new_path else '(none)'}")
 
-    def show_for_selection(self, ref_path: Optional[str], ref_time: Optional[float], new_path: Optional[str], new_time: Optional[float]):
+    def show_for_selection(
+        self,
+        ref_path: Optional[str],
+        ref_time: Optional[float],
+        new_path: Optional[str],
+        new_time: Optional[float],
+        ref_line: Optional[int] = None,
+        new_line: Optional[int] = None,
+    ):
         """Show the window (if hidden) and render previews for the selection."""
         self.set_media_paths(ref_path, new_path)
-        self.update_images(ref_time, new_time)
+        self.update_images(ref_time, new_time, ref_line=ref_line, new_line=new_line)
         if not self.isVisible():
             self.show()
             self.raise_(); self.activateWindow()
 
-    def update_images(self, ref_time: Optional[float], new_time: Optional[float]):
+    def update_images(
+        self,
+        ref_time: Optional[float],
+        new_time: Optional[float],
+        ref_line: Optional[int] = None,
+        new_line: Optional[int] = None,
+    ):
         """Refresh both sides using the provided timestamps (seconds)."""
         # Reference side
-        self._update_one(side="ref", media_path=self._ref_path, time_s=ref_time, img_label=self.ref_img, time_label=self.ref_time)
+        self._update_one(
+            side="ref",
+            media_path=self._ref_path,
+            time_s=ref_time,
+            line_no=ref_line,
+            img_label=self.ref_img,
+            time_label=self.ref_time,
+        )
         # New side
-        self._update_one(side="new", media_path=self._new_path, time_s=new_time, img_label=self.new_img, time_label=self.new_time)
+        self._update_one(
+            side="new",
+            media_path=self._new_path,
+            time_s=new_time,
+            line_no=new_line,
+            img_label=self.new_img,
+            time_label=self.new_time,
+        )
 
-    def _update_one(self, side: str, media_path: Optional[str], time_s: Optional[float], img_label: QLabel, time_label: QLabel):
+    def _update_one(
+        self,
+        side: str,
+        media_path: Optional[str],
+        time_s: Optional[float],
+        line_no: Optional[int],
+        img_label: QLabel,
+        time_label: QLabel,
+    ):
         """Render one side (ref/new): try cache then fall back to worker fetch."""
-        # Update time text under the image
-        time_label.setText(self._format_time(time_s) if time_s is not None else "(no selection)")
+        # Update time text under the image (prefix with line number if provided)
+        if time_s is None:
+            label_text = "(no selection)"
+        else:
+            t = self._format_time(time_s)
+            label_text = f"Line {line_no + 1}: {t}" if line_no is not None else t
+        time_label.setText(label_text)
+
         # Validate inputs early and show a neutral placeholder
         if not media_path or time_s is None or not os.path.exists(media_path):
             img_label.setText("(no image)")
             img_label.setPixmap(QPixmap())
             return
+
         b = _bucket_time(time_s)
         if b is None:
             img_label.setText("(no image)")
