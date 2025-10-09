@@ -35,7 +35,7 @@ from typing import Optional, Tuple, Dict
 
 from PyQt5.QtCore import Qt, QObject, QThread, pyqtSignal
 from PyQt5.QtGui import QPixmap
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy, QCheckBox
 
 
 def _bucket_time(t: Optional[float], bucket: float = 0.5) -> Optional[float]:
@@ -118,6 +118,9 @@ class PreviewImagesWindow(QWidget):
     - Images are rescaled on window resize to keep them fitting nicely.
     """
 
+    # Emitted when the 'Force same line numbers' checkbox changes
+    forceSameLinesChanged = pyqtSignal(bool)
+
     def __init__(self, parent=None, thumb_width: int = 320):
         """Create the window, UI elements, and internal caches/state."""
         super().__init__(parent)
@@ -137,6 +140,17 @@ class PreviewImagesWindow(QWidget):
 
         # UI -----------------------------------------------------------------
         root = QVBoxLayout(self)
+
+        # Controls row: Force same line numbers
+        ctrl = QHBoxLayout()
+        self.force_same_chk = QCheckBox("Force same line numbers (Based on last selected line)", self)
+        self.force_same_chk.setToolTip("When enabled, both previews use the same line index.")
+        self.force_same_chk.toggled.connect(lambda v: self.forceSameLinesChanged.emit(v))
+        ctrl.addStretch(1)
+        ctrl.addWidget(self.force_same_chk)
+        ctrl.addStretch(1)
+        root.addLayout(ctrl)
+
         row = QHBoxLayout(); root.addLayout(row)
 
         # Reference panel ----------------------------------------------------
@@ -172,6 +186,10 @@ class PreviewImagesWindow(QWidget):
         self._new_thread: Optional[QThread] = None
         self._ref_worker: Optional[_FrameGrabWorker] = None
         self._new_worker: Optional[_FrameGrabWorker] = None
+
+    def force_same_lines(self) -> bool:
+        """Return whether 'Force same line numbers' is active."""
+        return self.force_same_chk.isChecked()
 
     def set_media_paths(self, ref_path: Optional[str], new_path: Optional[str]):
         """Set the file system paths for reference and new media files."""
@@ -246,7 +264,6 @@ class PreviewImagesWindow(QWidget):
             img_label.setText("(no image)")
             img_label.setPixmap(QPixmap())
             return
-
         b = _bucket_time(time_s)
         if b is None:
             img_label.setText("(no image)")

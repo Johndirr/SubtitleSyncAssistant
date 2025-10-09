@@ -124,6 +124,9 @@ class MainWindow(QWidget):
         self.referencetable.itemChanged.connect(self._on_table_item_changed)
         self.synctable.itemChanged.connect(self._on_table_item_changed)
 
+        # Track the last index that was manually forced via context menu or action (Last forced index for preview sync)
+        self._last_forced_index: Optional[int] = None
+
     # ---------- UI ----------
     def _build_ui(self):
         """Create the full UI layout, plots, and tables."""
@@ -233,57 +236,58 @@ class MainWindow(QWidget):
         # Lazily instantiate and reuse a single PreviewImagesWindow instance
         if self._preview_win is None:
             self._preview_win = PreviewImagesWindow(self)
+            # When the checkbox toggles, refresh current images
+            self._preview_win.forceSameLinesChanged.connect(self._update_preview_images_from_selection)
         return self._preview_win
 
-    def _selected_row_start(self, table: QTableWidget) -> Optional[float]:
-        """Return start time (seconds) from the first selected row in a table.
-
-        Parameters
-        ----------
-        table: QTableWidget
-            Either the reference or sync table. Column 0 holds the start time.
-
-        Returns
-        -------
-        Optional[float]
-            Parsed seconds value, or None if no selection/invalid cell.
-        """
-        # Get current row selection; we use the first selected row if any
-        sel = table.selectionModel().selectedRows()
-        if not sel:
-            return None
-        # Start time is stored in column 0 as an SRT time string
-        itm = table.item(sel[0].row(), 0)
-        if not itm:
-            return None
-        # Reuse helper to parse HH:MM:SS,mmm -> seconds (float)
-        return self._parse_time_to_seconds(itm.text())
-
     def _selected_row_index(self, table: QTableWidget) -> Optional[int]:
-        """Return the first selected row index (0-based) or None."""
         sel = table.selectionModel().selectedRows()
         return sel[0].row() if sel else None
 
-    def _update_preview_images_from_selection(self):
-        """Open/refresh the preview using the current table selections.
+    def _get_row_start_time(self, table: QTableWidget, row: int) -> Optional[float]:
+        """Get start time (seconds) for given row from column 0."""
+        if row is None or row < 0 or row >= table.rowCount():
+            return None
+        itm = table.item(row, 0)
+        return self._parse_time_to_seconds(itm.text()) if itm else None
 
-        Collects start times from both tables and the media file paths from
-        the line edits, then forwards these to the preview window so it can
-        extract and display frames side by side.
-        """
-        # Read the selected start times (seconds) from both tables
-        ref_time = self._selected_row_start(self.referencetable)
-        new_time = self._selected_row_start(self.synctable)
+    def _selected_row_start(self, table: QTableWidget) -> Optional[float]:
+        """Return start time (seconds) from the first selected row in a table."""
+        sel = table.selectionModel().selectedRows()
+        if not sel:
+            return None
+        row = sel[0].row()
+        return self._get_row_start_time(table, row)
+
+    def _update_preview_images_from_selection(self):
+        """Open/refresh the preview using the current table selections."""
         ref_idx = self._selected_row_index(self.referencetable)
         new_idx = self._selected_row_index(self.synctable)
-        # Read the media file paths from the top inputs (empty -> None)
+        force_same = self._preview_window().force_same_lines()
+
+        if force_same:
+            # Prefer the row index from the table the user clicked last
+            idx = self._last_forced_index
+            if idx is None:
+                # Fallback if nothing has been clicked yet
+                idx = new_idx if new_idx is not None else ref_idx
+            ref_time = self._get_row_start_time(self.referencetable, idx) if idx is not None else None
+            new_time = self._get_row_start_time(self.synctable, idx) if idx is not None else None
+            ref_line = idx
+            new_line = idx
+        else:
+            ref_time = self._selected_row_start(self.referencetable)
+            new_time = self._selected_row_start(self.synctable)
+            ref_line = ref_idx
+            new_line = new_idx
+
         ref_path = self.le1.text().strip() if self.le1.text().strip() else None
         new_path = self.le2.text().strip() if self.le2.text().strip() else None
-        # Ask the preview to show/update with the provided selection
+
         self._preview_window().show_for_selection(
             ref_path, ref_time,
             new_path, new_time,
-            ref_line=ref_idx, new_line=new_idx
+            ref_line=ref_line, new_line=new_line
         )
 
     def align_table_columns_left(self, table: QTableWidget):
@@ -360,7 +364,14 @@ class MainWindow(QWidget):
         """Highlight selected reference rows on the reference plot."""
         indices = [idx.row() for idx in self.referencetable.selectionModel().selectedRows()]
         self.plot1.set_selected_subtitle_indices(indices)
-        # If preview window is open, update its images
+
+        # Track the last user-picked row index for 'Force same line numbers'
+        cur = self.referencetable.currentRow()
+        if cur is not None and cur >= 0:
+            self._last_forced_index = cur
+        elif indices:
+            self._last_forced_index = indices[0]
+
         if self._preview_win and self._preview_win.isVisible():
             self._update_preview_images_from_selection()
 
@@ -368,7 +379,14 @@ class MainWindow(QWidget):
         """Highlight selected sync rows on the new plot."""
         indices = [idx.row() for idx in self.synctable.selectionModel().selectedRows()]
         self.plot2.set_selected_subtitle_indices(indices)
-        # If preview window is open, update its images
+
+        # Track the last user-picked row index for 'Force same line numbers'
+        cur = self.synctable.currentRow()
+        if cur is not None and cur >= 0:
+            self._last_forced_index = cur
+        elif indices:
+            self._last_forced_index = indices[0]
+
         if self._preview_win and self._preview_win.isVisible():
             self._update_preview_images_from_selection()
 
