@@ -101,7 +101,9 @@ class MatplotlibPlotWidget(QFrame):
 
         # Top bar: left control cluster + centered title + right spacer
         top_bar = QHBoxLayout(); top_bar.setContentsMargins(4, 0, 4, 0); top_bar.setSpacing(6)
-        left_controls = QWidget(self); lc_layout = QHBoxLayout(left_controls); lc_layout.setContentsMargins(0, 0, 0, 0); lc_layout.setSpacing(6)
+        # Left controls
+        left_controls = QWidget(self)
+        lc_layout = QHBoxLayout(left_controls); lc_layout.setContentsMargins(0, 0, 0, 0); lc_layout.setSpacing(6)
 
         # Button with native style icons (robust to fonts)
         self.play_btn = QPushButton("", self)
@@ -121,15 +123,37 @@ class MatplotlibPlotWidget(QFrame):
         self.amp_spin.setToolTip("Adjust vertical zoom (does not alter data).")
         self.amp_spin.valueChanged.connect(self._on_amp_changed)
 
-        lc_layout.addWidget(self.play_btn); lc_layout.addWidget(self.pos_lbl); lc_layout.addWidget(amp_lbl); lc_layout.addWidget(self.amp_spin)
+        lc_layout.addWidget(self.play_btn)
+        lc_layout.addWidget(self.pos_lbl)
+        lc_layout.addWidget(amp_lbl)
+        lc_layout.addWidget(self.amp_spin)
         top_bar.addWidget(left_controls)
+
+        # Centered title
         top_bar.addStretch()
-        self.label = QLabel(title, self); self.label.setAlignment(Qt.AlignCenter); self.label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.label = QLabel(title, self)
+        self.label.setAlignment(Qt.AlignCenter)
+        self.label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         top_bar.addWidget(self.label)
         top_bar.addStretch()
-        # Keep the title centered by mirroring left_controls width on the right
-        right_phantom = QWidget(self); right_phantom.setFixedWidth(left_controls.sizeHint().width())
-        top_bar.addWidget(right_phantom)
+
+        # Right controls: total length
+        right_controls = QWidget(self)
+        rc_layout = QHBoxLayout(right_controls); rc_layout.setContentsMargins(0, 0, 0, 0); rc_layout.setSpacing(6)
+        self.total_lbl = QLabel("Total: --:--:--,---", self)
+        self.total_lbl.setToolTip("Total audio length")
+        self.total_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        rc_layout.addWidget(self.total_lbl)
+        top_bar.addWidget(right_controls)
+
+        # Keep title centered by making left/right clusters same min width
+        try:
+            w = max(left_controls.sizeHint().width(), right_controls.sizeHint().width())
+            left_controls.setMinimumWidth(w)
+            right_controls.setMinimumWidth(w)
+        except Exception:
+            pass
+
         layout.addLayout(top_bar)
 
         # The actual plot canvas
@@ -174,6 +198,10 @@ class MatplotlibPlotWidget(QFrame):
             self.slider.setMaximum(0)
             self.slider.setEnabled(False)
         self.slider.setValue(0)
+
+        # Update total label (prefer audio_segment if present)
+        self._update_total_label()
+
         self._plot_window(0)
 
     def set_subtitle_intervals(self, intervals: List[Tuple[float, float]]):
@@ -204,16 +232,14 @@ class MatplotlibPlotWidget(QFrame):
         self._plot_window(start)
 
     def set_audio_segment(self, segment: AudioSegment):
-        """Attach the full-quality audio segment used for playback.
-
-        Note: We do not resample here; playback uses whatever the media
-        file provides. Only the plot uses the (possibly decimated) arrays.
-        """
+        """Attach the full-quality audio segment used for playback."""
         self.audio_segment = segment
         total = (len(segment) / 1000.0) if segment else 0.0
         if self.playhead_sec > total:
             self.playhead_sec = max(0.0, total - 0.001)
         self.pos_lbl.setText(self._format_hhmmss_mmm(self.playhead_sec))
+        # Update total label now that we have the exact media length
+        self._update_total_label()
 
     def stop_playback_external(self):
         """Stop playback when the other plot starts playing.
@@ -533,6 +559,15 @@ class MatplotlibPlotWidget(QFrame):
         if ms == 1000:
             ms = 0; s += 1
         return f"{h:02}:{m:02}:{s:02},{ms:03}"
+
+    def _update_total_label(self):
+        """Update the total length label on the top-right."""
+        total_sec = 0.0
+        if self.audio_segment is not None:
+            total_sec = len(self.audio_segment) / 1000.0
+        elif self.total_duration:
+            total_sec = float(self.total_duration)
+        self.total_lbl.setText(f"Total: {self._format_hhmmss_mmm(total_sec)}")
 
     def _set_playhead(self, sec: float, center_if_needed: bool = False):
         """Move the playhead to a specific time and optionally recenter view."""
